@@ -1,0 +1,22 @@
+## Interface: 120005, 120007, 120100
+## Title: Lafee Damage Type Tracker
+## Title-deDE: Lafee Schadensart-Tracker
+## Title-esES: Rastreador de tipos de daño de Lafee
+## Title-esMX: Rastreador de tipos de daño de Lafee
+## Title-frFR: Lafee Damage Type Tracker
+## Title-zhCN: Lafee 伤害类型追踪器
+## Title-zhTW: Lafee 傷害類型追蹤器
+## Notes: Tracks physical vs magical damage taken with a configurable minimap button and sliding time window.
+## Notes-deDE: Verfolgt erlittenen körperlichen und magischen Schaden mit einer konfigurierbaren Minikarten-Schaltfläche und einem gleitenden Zeitfenster.
+## Notes-esES: Registra el daño físico y mágico recibido con un botón de minimapa configurable y una ventana de tiempo deslizante.
+## Notes-esMX: Registra el daño físico y mágico recibido con un botón de minimapa configurable y una ventana de tiempo deslizante.
+## Notes-frFR: Suit les dégâts physiques et magiques subis avec un bouton de minicarte configurable et une fenêtre de temps glissante.
+## Notes-zhCN: 使用可配置的小地图按钮和滑动时间窗口追踪受到的物理与魔法伤害。
+## Notes-zhTW: 使用可設定的小地圖按鈕和滑動時間視窗追蹤受到的物理與魔法傷害。
+## Author: Lafee
+## Version: 1.1.0
+## SavedVariables: LafeeDamageTrackerDB
+## OptionalDeps: BetterCooldownManager, ElvUI
+
+Localization.lua
+Lafee_damage_tracker.lua
