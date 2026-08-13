@@ -18,8 +18,11 @@ local DEFAULTS = {
     anchorSpacing = 4,
     matchPowerBarWidth = true,
     bcdmAnchor = "BCDM_PowerBar",
+    anchorFrom = "BOTTOM",
+    anchorParent = "BCDM_PowerBar",
+    anchorTo = "TOP",
     bcdmOffsetX = 0,
-    bcdmOffsetY = 0,
+    bcdmOffsetY = 4,
     barStyle = "SQUARE",
     minimap = {
         angle = 225,
@@ -50,6 +53,34 @@ local BCDM_ANCHORS = {
     { name = "BCDM_CustomItemBar", label = L.ITEM_BAR },
     { name = "BCDM_CustomItemSpellBar", label = L.ITEM_SPELL_BAR },
     { name = "BCDM_TrinketBar", label = L.TRINKET_BAR },
+}
+
+local ANCHOR_POINTS = {
+    "TOPLEFT", "TOP", "TOPRIGHT",
+    "LEFT", "CENTER", "RIGHT",
+    "BOTTOMLEFT", "BOTTOM", "BOTTOMRIGHT",
+}
+
+local VALID_ANCHOR_POINTS = {}
+for _, point in ipairs(ANCHOR_POINTS) do VALID_ANCHOR_POINTS[point] = true end
+
+local ANCHOR_PARENTS = {
+    { name = "UIParent", label = "|cFF00AEF7Blizzard|r: UI Parent" },
+    { name = "PlayerFrame", label = "|cFF00AEF7Blizzard|r: Player Frame" },
+    { name = "TargetFrame", label = "|cFF00AEF7Blizzard|r: Target Frame" },
+    { name = "EssentialCooldownViewer", label = "|cFF00AEF7Blizzard|r: Essential Cooldowns" },
+    { name = "UtilityCooldownViewer", label = "|cFF00AEF7Blizzard|r: Utility Cooldowns" },
+    { name = "BuffIconCooldownViewer", label = "|cFF00AEF7Blizzard|r: Tracked Buffs" },
+    { name = "BCDM_PowerBar", label = "|cFF8080FFBCDM|r: Power Bar" },
+    { name = "BCDM_SecondaryPowerBar", label = "|cFF8080FFBCDM|r: Secondary Power Bar" },
+    { name = "BCDM_CastBar", label = "|cFF8080FFBCDM|r: Cast Bar" },
+    { name = "BCDM_CustomCooldownViewer", label = "|cFF8080FFBCDM|r: Custom Bar" },
+    { name = "BCDM_AdditionalCustomCooldownViewer", label = "|cFF8080FFBCDM|r: Secondary Custom Bar" },
+    { name = "BCDM_CustomItemBar", label = "|cFF8080FFBCDM|r: Item Bar" },
+    { name = "BCDM_CustomItemSpellBar", label = "|cFF8080FFBCDM|r: Item/Spell Bar" },
+    { name = "BCDM_TrinketBar", label = "|cFF8080FFBCDM|r: Trinket Bar" },
+    { name = "ElvUF_Player", label = "|cff1784d1ElvUI|r: Player Frame" },
+    { name = "ElvUF_Target", label = "|cff1784d1ElvUI|r: Target Frame" },
 }
 
 local db
@@ -146,11 +177,14 @@ end
 
 local function RefreshActiveProfile()
     db = GetCharacterProfiles()[currentCharacterKey]
+    local legacyAnchor = db.anchorFrom == nil or db.anchorParent == nil or db.anchorTo == nil
+    local legacyOffsetY = db.bcdmOffsetY
     CopyDefaults(DEFAULTS, db)
     db.width = Clamp(db.width, MIN_WIDTH, MAX_WIDTH)
     db.height = Clamp(db.height, MIN_HEIGHT, MAX_HEIGHT)
     db.window = Clamp(db.window, MIN_WINDOW, MAX_WINDOW)
-    if db.anchorMode ~= "FREE" and db.anchorMode ~= "BETTER_COOLDOWN_MANAGER" and db.anchorMode ~= "ELVUI" then
+    if db.anchorMode ~= "FREE" and db.anchorMode ~= "ANCHORED"
+        and db.anchorMode ~= "BETTER_COOLDOWN_MANAGER" and db.anchorMode ~= "ELVUI" then
         db.anchorMode = DEFAULTS.anchorMode
     end
     if db.anchorPosition ~= "ABOVE" and db.anchorPosition ~= "BELOW" then
@@ -161,8 +195,28 @@ local function RefreshActiveProfile()
     if type(db.bcdmAnchor) ~= "string" or db.bcdmAnchor == "" then
         db.bcdmAnchor = DEFAULTS.bcdmAnchor
     end
+    if legacyAnchor then
+        db.anchorParent = db.anchorMode == "ELVUI" and "ElvUF_Player" or db.bcdmAnchor
+        if db.anchorPosition == "BELOW" then
+            db.anchorFrom, db.anchorTo = "TOP", "BOTTOM"
+            db.bcdmOffsetY = (tonumber(legacyOffsetY) or 0) - db.anchorSpacing
+        else
+            db.anchorFrom, db.anchorTo = "BOTTOM", "TOP"
+            db.bcdmOffsetY = (tonumber(legacyOffsetY) or 0) + db.anchorSpacing
+        end
+    end
+    if db.anchorMode == "BETTER_COOLDOWN_MANAGER" or db.anchorMode == "ELVUI" then
+        db.anchorMode = "ANCHORED"
+    end
+    if not VALID_ANCHOR_POINTS[db.anchorFrom] then db.anchorFrom = DEFAULTS.anchorFrom end
+    if not VALID_ANCHOR_POINTS[db.anchorTo] then db.anchorTo = DEFAULTS.anchorTo end
+    if type(db.anchorParent) ~= "string" or db.anchorParent == "" then
+        db.anchorParent = DEFAULTS.anchorParent
+    end
     db.bcdmOffsetX = Clamp(tonumber(db.bcdmOffsetX) or DEFAULTS.bcdmOffsetX, MIN_BCDM_OFFSET, MAX_BCDM_OFFSET)
     db.bcdmOffsetY = Clamp(tonumber(db.bcdmOffsetY) or DEFAULTS.bcdmOffsetY, MIN_BCDM_OFFSET, MAX_BCDM_OFFSET)
+    db.minimap.angle = (tonumber(db.minimap.angle) or DEFAULTS.minimap.angle) % 360
+    db.minimap.hide = db.minimap.hide == true
     if db.barStyle ~= "CLASSIC" and db.barStyle ~= "SQUARE" then
         db.barStyle = DEFAULTS.barStyle
     end
@@ -199,25 +253,13 @@ local function ResetDamageTotals()
 end
 
 local function GetPowerBarAnchor()
-    if db.anchorMode == "BETTER_COOLDOWN_MANAGER" then
-        if C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("BetterCooldownManager") then
-            return _G[db.bcdmAnchor]
-        end
-    elseif db.anchorMode == "ELVUI" then
-        if C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("ElvUI") and _G.ElvUF_Player then
-            local powerBar = _G.ElvUF_Player.Power
-            if powerBar and powerBar:IsShown() then
-                return powerBar
-            end
-        end
-    end
+    if db.anchorMode == "FREE" then return nil end
+    if db.anchorParent == "UIParent" then return UIParent end
+    return _G[db.anchorParent]
 end
 
 local function GetAnchorOffsets()
-    if db.anchorMode == "BETTER_COOLDOWN_MANAGER" then
-        return db.bcdmOffsetX, db.bcdmOffsetY
-    end
-    return 0, 0
+    return db.bcdmOffsetX, db.bcdmOffsetY
 end
 
 local function GetBCDMAnchorLabel(anchorName)
@@ -284,29 +326,12 @@ local function ApplyFramePosition()
 
         isAnchoredToPowerBar = true
         frame:ClearAllPoints()
-        if db.matchPowerBarWidth then
-            if db.anchorPosition == "BELOW" then
-                frame:SetPoint("TOPLEFT", powerBar, "BOTTOMLEFT", offsetX, offsetY - db.anchorSpacing)
-                frame:SetPoint("TOPRIGHT", powerBar, "BOTTOMRIGHT", offsetX, offsetY - db.anchorSpacing)
-            else
-                frame:SetPoint("BOTTOMLEFT", powerBar, "TOPLEFT", offsetX, offsetY + db.anchorSpacing)
-                frame:SetPoint("BOTTOMRIGHT", powerBar, "TOPRIGHT", offsetX, offsetY + db.anchorSpacing)
-            end
-        elseif db.anchorPosition == "BELOW" then
-            frame:SetPoint("TOP", powerBar, "BOTTOM", offsetX, offsetY - db.anchorSpacing)
-        else
-            frame:SetPoint("BOTTOM", powerBar, "TOP", offsetX, offsetY + db.anchorSpacing)
-        end
+        frame:SetPoint(db.anchorFrom, powerBar, db.anchorTo, offsetX, offsetY)
         return
     end
 
     isAnchoredToPowerBar = false
-    if db.anchorMode == "ELVUI" then
-        frame:ClearAllPoints()
-        frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    else
-        ApplyFreeFramePosition()
-    end
+    ApplyFreeFramePosition()
     if db.anchorMode ~= "FREE" and ScheduleAnchorRetry then
         ScheduleAnchorRetry()
     end
@@ -314,6 +339,9 @@ end
 
 local function ApplyFrameSize()
     if isAnchoredToPowerBar and db.matchPowerBarWidth then
+        local anchorFrame = GetPowerBarAnchor()
+        local anchorWidth = anchorFrame and anchorFrame:GetWidth()
+        frame:SetWidth(type(anchorWidth) == "number" and anchorWidth > 0 and anchorWidth or (db.width + 20))
         frame:SetHeight(db.height + 12)
         frame.bar:ClearAllPoints()
         frame.bar:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -4)
@@ -512,8 +540,8 @@ local function UpdateOptionsControls()
     UIDropDownMenu_SetText(optionsFrame.barStyleDropdown, optionsFrame.barStyleLabels[db.barStyle])
     UIDropDownMenu_SetText(optionsFrame.anchorModeDropdown, optionsFrame.anchorModeLabels[db.anchorMode])
     UIDropDownMenu_SetText(optionsFrame.anchorPositionDropdown, optionsFrame.anchorPositionLabels[db.anchorPosition])
-    UIDropDownMenu_SetText(optionsFrame.bcdmAnchorDropdown, GetBCDMAnchorLabel(db.bcdmAnchor))
-    optionsFrame.bcdmAnchorInput:SetText(db.bcdmAnchor)
+    UIDropDownMenu_SetText(optionsFrame.bcdmAnchorDropdown, GetBCDMAnchorLabel(db.anchorParent))
+    optionsFrame.bcdmAnchorInput:SetText(db.anchorParent)
     optionsFrame.bcdmOffsetXInput:SetText(tostring(db.bcdmOffsetX))
     optionsFrame.bcdmOffsetYInput:SetText(tostring(db.bcdmOffsetY))
     optionsFrame.matchPowerBarWidthCheck:SetChecked(db.matchPowerBarWidth)
@@ -524,7 +552,7 @@ local function UpdateOptionsControls()
     SetSliderValue(optionsFrame.offsetYSlider, db.y)
     SetSliderValue(optionsFrame.windowSlider, db.window)
 
-    local bcdmActive = db.anchorMode == "BETTER_COOLDOWN_MANAGER"
+    local bcdmActive = db.anchorMode ~= "FREE"
     for _, control in ipairs(optionsFrame.bcdmControls) do
         control:SetAlpha(bcdmActive and 1 or 0.45)
         if control.SetEnabled then
@@ -611,6 +639,7 @@ local function CreateOptionsFrame()
 
     optionsFrame.anchorModeLabels = {
         FREE = L.FREE,
+        ANCHORED = "Anchored",
         BETTER_COOLDOWN_MANAGER = "BetterCooldownManager",
         ELVUI = "ElvUI",
     }
@@ -646,13 +675,18 @@ local function CreateOptionsFrame()
     optionsFrame.anchorModeDropdown:SetPoint("TOPLEFT", optionsFrame.anchorModeLabel, "BOTTOMLEFT", -16, -4)
     UIDropDownMenu_SetWidth(optionsFrame.anchorModeDropdown, 220)
     UIDropDownMenu_Initialize(optionsFrame.anchorModeDropdown, function(_, level)
-        for _, mode in ipairs({ "FREE", "BETTER_COOLDOWN_MANAGER", "ELVUI" }) do
+        for _, mode in ipairs({ "FREE", "ANCHORED" }) do
             local info = UIDropDownMenu_CreateInfo()
             info.notCheckable = true
             info.text = GetDropdownItemText(optionsFrame.anchorModeLabels[mode], db.anchorMode == mode)
             info.func = function()
                 if db.anchorMode == mode then return end
                 db.anchorMode = mode
+                if mode == "BETTER_COOLDOWN_MANAGER" then
+                    db.anchorParent = db.bcdmAnchor
+                elseif mode == "ELVUI" then
+                    db.anchorParent = "ElvUF_Player"
+                end
                 ReapplyPowerBarAnchor()
                 UpdateOptionsControls()
                 print("|cffffd100" .. L.ADDON_TITLE .. "|r : " .. L.INTEGRATION_CHANGED)
@@ -679,6 +713,11 @@ local function CreateOptionsFrame()
             info.text = GetDropdownItemText(optionsFrame.anchorPositionLabels[position], db.anchorPosition == position)
             info.func = function()
                 db.anchorPosition = position
+                if position == "BELOW" then
+                    db.anchorFrom, db.anchorTo = "TOP", "BOTTOM"
+                else
+                    db.anchorFrom, db.anchorTo = "BOTTOM", "TOP"
+                end
                 ReapplyPowerBarAnchor()
                 UpdateOptionsControls()
             end
@@ -697,9 +736,10 @@ local function CreateOptionsFrame()
         for _, anchor in ipairs(BCDM_ANCHORS) do
             local info = UIDropDownMenu_CreateInfo()
             info.notCheckable = true
-            info.text = GetDropdownItemText(anchor.label, db.bcdmAnchor == anchor.name)
+            info.text = GetDropdownItemText(anchor.label, db.anchorParent == anchor.name)
             info.func = function()
                 db.bcdmAnchor = anchor.name
+                db.anchorParent = anchor.name
                 ReapplyPowerBarAnchor()
                 UpdateOptionsControls()
             end
@@ -721,8 +761,9 @@ local function CreateOptionsFrame()
         if anchorName == "" then
             anchorName = DEFAULTS.bcdmAnchor
         end
-        local changed = db.bcdmAnchor ~= anchorName
+        local changed = db.anchorParent ~= anchorName
         db.bcdmAnchor = anchorName
+        db.anchorParent = anchorName
         self:SetText(anchorName)
         if changed then
             ReapplyPowerBarAnchor()
@@ -734,7 +775,7 @@ local function CreateOptionsFrame()
         self:ClearFocus()
     end)
     optionsFrame.bcdmAnchorInput:SetScript("OnEscapePressed", function(self)
-        self:SetText(db.bcdmAnchor)
+        self:SetText(db.anchorParent)
         self:ClearFocus()
     end)
     optionsFrame.bcdmAnchorInput:SetScript("OnEditFocusLost", SaveBCDMAnchorName)
@@ -937,15 +978,26 @@ local function CreateMinimapButton()
     minimapButton = CreateFrame("Button", "LafeeDamageTrackerMinimapButton", Minimap)
     minimapButton:SetSize(32, 32)
     minimapButton:SetFrameStrata("MEDIUM")
+    minimapButton:SetFrameLevel(Minimap:GetFrameLevel() + 8)
     minimapButton:SetMovable(true)
     minimapButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     minimapButton:RegisterForDrag("LeftButton")
 
+    minimapButton.background = minimapButton:CreateTexture(nil, "BACKGROUND")
+    minimapButton.background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    minimapButton.background:SetSize(24, 24)
+    minimapButton.background:SetPoint("CENTER")
+
     minimapButton.icon = minimapButton:CreateTexture(nil, "ARTWORK", nil, 1)
-    minimapButton.icon:SetTexture("Interface\\Icons\\Ability_Warrior_ShieldMastery")
+    minimapButton.icon:SetTexture("Interface\\Icons\\INV_Shield_06")
     minimapButton.icon:SetSize(22, 22)
     minimapButton.icon:SetPoint("CENTER")
     minimapButton.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    minimapButton.border = minimapButton:CreateTexture(nil, "OVERLAY")
+    minimapButton.border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    minimapButton.border:SetSize(54, 54)
+    minimapButton.border:SetPoint("TOPLEFT", -11, 11)
 
     minimapButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
@@ -1138,6 +1190,173 @@ frame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 frame:RegisterEvent("PLAYER_REGEN_DISABLED")
 frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 frame:RegisterEvent("UNIT_COMBAT")
+
+-- Public integration API. Consumers such as BetterCooldownManager should use
+-- this table instead of reading LafeeDamageTrackerDB or calling local UI
+-- helpers directly. API methods intentionally validate through the same
+-- profile normalization path as the native LDT options window.
+local API = _G.LafeeDamageTrackerAPI or {}
+_G.LafeeDamageTrackerAPI = API
+API.version = 1
+
+local PUBLIC_OPTIONS = {
+    point = true, relativePoint = true, x = true, y = true,
+    width = true, height = true, shown = true, window = true,
+    anchorMode = true, anchorPosition = true, anchorSpacing = true,
+    anchorFrom = true, anchorParent = true, anchorTo = true,
+    matchPowerBarWidth = true, bcdmAnchor = true,
+    bcdmOffsetX = true, bcdmOffsetY = true, barStyle = true,
+}
+
+local function RefreshAfterPublicOptionChange(option)
+    RefreshActiveProfile()
+    if option == "minimap.hide" then
+        if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
+    elseif option == "minimap.angle" then
+        UpdateMinimapButtonPosition()
+    else
+        ReapplyPowerBarAnchor()
+        UpdateDisplay()
+    end
+    if optionsFrame and optionsFrame:IsShown() then UpdateOptionsControls() end
+end
+
+function API:IsReady()
+    return db ~= nil and rootDB ~= nil
+end
+
+function API:GetOption(option)
+    if not db then return nil end
+    if option == "minimap.hide" then return db.minimap.hide end
+    if option == "minimap.angle" then return db.minimap.angle end
+    if not PUBLIC_OPTIONS[option] then return nil end
+    return db[option]
+end
+
+function API:SetOption(option, value)
+    if not db then return false, "not-ready" end
+    if option == "minimap.hide" then
+        db.minimap.hide = value == true
+    elseif option == "minimap.angle" then
+        local angle = tonumber(value)
+        if not angle then return false, "invalid-value" end
+        db.minimap.angle = angle % 360
+    elseif option == "anchorFrom" or option == "anchorTo" then
+        if not VALID_ANCHOR_POINTS[value] then return false, "invalid-value" end
+        db[option] = value
+    elseif option == "anchorParent" then
+        if type(value) ~= "string" or value == "" then return false, "invalid-value" end
+        db.anchorParent = value
+        db.bcdmAnchor = value
+    elseif option == "anchorMode" then
+        if value ~= "FREE" and value ~= "ANCHORED"
+            and value ~= "BETTER_COOLDOWN_MANAGER" and value ~= "ELVUI" then
+            return false, "invalid-value"
+        end
+        db.anchorMode = value
+    elseif PUBLIC_OPTIONS[option] then
+        db[option] = value
+    else
+        return false, "unknown-option"
+    end
+    RefreshAfterPublicOptionChange(option)
+    return true
+end
+
+function API:GetCurrentCharacterKey()
+    return currentCharacterKey
+end
+
+function API:GetCharacterKeys()
+    local keys = {}
+    for characterKey in pairs(GetCharacterProfiles()) do keys[#keys + 1] = characterKey end
+    table.sort(keys)
+    return keys
+end
+
+function API:CopyProfile(sourceKey)
+    if not db or type(sourceKey) ~= "string" then return false, "invalid-source" end
+    local sourceProfile = GetCharacterProfiles()[sourceKey]
+    if not sourceProfile or sourceKey == currentCharacterKey then return false, "invalid-source" end
+    rootDB.characters[currentCharacterKey] = DeepCopy(sourceProfile)
+    RefreshActiveProfile()
+    ResetDamageTotals()
+    ReapplyPowerBarAnchor()
+    UpdateMinimapButtonPosition()
+    if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
+    if optionsFrame and optionsFrame:IsShown() then UpdateOptionsControls() end
+    return true
+end
+
+function API:GetBCDMAnchors()
+    local anchors = {}
+    for _, anchor in ipairs(BCDM_ANCHORS) do
+        anchors[#anchors + 1] = { name = anchor.name, label = anchor.label }
+    end
+    return anchors
+end
+
+function API:GetAnchorPoints()
+    local points = {}
+    for _, point in ipairs(ANCHOR_POINTS) do
+        points[#points + 1] = { name = point, label = point }
+    end
+    return points
+end
+
+function API:GetAnchorParents()
+    local parents = {}
+    for _, anchor in ipairs(ANCHOR_PARENTS) do
+        if anchor.name ~= "ElvUF_Player" and anchor.name ~= "ElvUF_Target"
+            or C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("ElvUI") then
+            parents[#parents + 1] = { name = anchor.name, label = anchor.label }
+        end
+    end
+    local current = db and db.anchorParent
+    if type(current) == "string" and current ~= "" then
+        local found = false
+        for _, anchor in ipairs(parents) do
+            if anchor.name == current then found = true break end
+        end
+        if not found then parents[#parents + 1] = { name = current, label = current } end
+    end
+    return parents
+end
+
+function API:ResetPosition()
+    if not db then return false, "not-ready" end
+    db.point, db.relativePoint = DEFAULTS.point, DEFAULTS.relativePoint
+    db.x, db.y = DEFAULTS.x, DEFAULTS.y
+    RefreshLayout()
+    if optionsFrame and optionsFrame:IsShown() then UpdateOptionsControls() end
+    return true
+end
+
+function API:ClearDamage()
+    if not db then return false, "not-ready" end
+    ResetDamageTotals()
+    UpdateDisplay()
+    return true
+end
+
+function API:Refresh()
+    if not db then return false, "not-ready" end
+    RefreshLayout()
+    UpdateMinimapButtonPosition()
+    if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
+    if optionsFrame and optionsFrame:IsShown() then UpdateOptionsControls() end
+    return true
+end
+
+function API:GetTrackerFrame()
+    return frame
+end
+
+function API:OpenOptions()
+    if not db then return false, "not-ready" end
+    if not optionsFrame or not optionsFrame:IsShown() then ToggleOptionsFrame() end
+    return true
+end
 
 SLASH_LAFEEDAMAGETRACKER1 = "/ldt"
 SlashCmdList["LAFEEDAMAGETRACKER"] = function(msg)
