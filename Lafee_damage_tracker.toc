@@ -1,4 +1,4 @@
-## Interface: 120005, 120007, 120100
+## Interface: 120007, 120100
 ## Title: Lafee Damage Type Tracker
 ## Title-deDE: Lafee Schadensart-Tracker
 ## Title-esES: Rastreador de tipos de daño de Lafee
