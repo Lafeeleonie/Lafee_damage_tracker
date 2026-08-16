@@ -15,9 +15,8 @@
 ## Notes-zhCN: 使用可配置的小地图按钮和滑动时间窗口追踪受到的物理与魔法伤害。
 ## Notes-zhTW: 使用可設定的小地圖按鈕和滑動時間視窗追蹤受到的物理與魔法傷害。
 ## Author: Lafee
-## Version: 1.1.0
+## Version: 1.2.0
 ## SavedVariables: LafeeDamageTrackerDB
-## OptionalDeps: BetterCooldownManager, ElvUI
 
 Localization.lua
 lafee_damage_tracker.lua
