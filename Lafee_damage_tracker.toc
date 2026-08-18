@@ -28,4 +28,5 @@
 
 Localization.lua
 LocalizationOverrides.lua
-lafee_damage_tracker.lua
+EscapeClose.lua
+Lafee_damage_tracker.lua
