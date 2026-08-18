@@ -16,10 +16,14 @@ local DEFAULTS = {
     anchorMode = "FREE",
     anchorPosition = "ABOVE",
     anchorSpacing = 4,
-    matchPowerBarWidth = true,
-    bcdmAnchor = "BCDM_PowerBar",
+    inheritWidth = false,
+    leftOffset = 0,
+    rightOffset = 0,
+    anchorOffsetX = 0,
+    anchorOffsetY = 4,
+    matchPowerBarWidth = false,
     anchorFrom = "BOTTOM",
-    anchorParent = "BCDM_PowerBar",
+    anchorParent = "UIParent",
     anchorTo = "TOP",
     bcdmOffsetX = 0,
     bcdmOffsetY = 4,
@@ -41,19 +45,9 @@ local MIN_HEIGHT = 10
 local MAX_HEIGHT = 32
 local MIN_ANCHOR_SPACING = 0
 local MAX_ANCHOR_SPACING = 40
-local MIN_BCDM_OFFSET = -500
-local MAX_BCDM_OFFSET = 500
-
-local BCDM_ANCHORS = {
-    { name = "BCDM_PowerBar", label = L.POWER_BAR },
-    { name = "BCDM_SecondaryPowerBar", label = L.SECONDARY_POWER_BAR },
-    { name = "BCDM_CastBar", label = L.CAST_BAR },
-    { name = "BCDM_CustomCooldownViewer", label = L.CUSTOM_BAR },
-    { name = "BCDM_AdditionalCustomCooldownViewer", label = L.SECONDARY_CUSTOM_BAR },
-    { name = "BCDM_CustomItemBar", label = L.ITEM_BAR },
-    { name = "BCDM_CustomItemSpellBar", label = L.ITEM_SPELL_BAR },
-    { name = "BCDM_TrinketBar", label = L.TRINKET_BAR },
-}
+local MIN_ANCHOR_OFFSET = -500
+local MAX_ANCHOR_OFFSET = 500
+local MAX_EDGE_OFFSET = 100
 
 local ANCHOR_POINTS = {
     "TOPLEFT", "TOP", "TOPRIGHT",
@@ -71,16 +65,6 @@ local ANCHOR_PARENTS = {
     { name = "EssentialCooldownViewer", label = "|cFF00AEF7Blizzard|r: Essential Cooldowns" },
     { name = "UtilityCooldownViewer", label = "|cFF00AEF7Blizzard|r: Utility Cooldowns" },
     { name = "BuffIconCooldownViewer", label = "|cFF00AEF7Blizzard|r: Tracked Buffs" },
-    { name = "BCDM_PowerBar", label = "|cFF8080FFBCDM|r: Power Bar" },
-    { name = "BCDM_SecondaryPowerBar", label = "|cFF8080FFBCDM|r: Secondary Power Bar" },
-    { name = "BCDM_CastBar", label = "|cFF8080FFBCDM|r: Cast Bar" },
-    { name = "BCDM_CustomCooldownViewer", label = "|cFF8080FFBCDM|r: Custom Bar" },
-    { name = "BCDM_AdditionalCustomCooldownViewer", label = "|cFF8080FFBCDM|r: Secondary Custom Bar" },
-    { name = "BCDM_CustomItemBar", label = "|cFF8080FFBCDM|r: Item Bar" },
-    { name = "BCDM_CustomItemSpellBar", label = "|cFF8080FFBCDM|r: Item/Spell Bar" },
-    { name = "BCDM_TrinketBar", label = "|cFF8080FFBCDM|r: Trinket Bar" },
-    { name = "ElvUF_Player", label = "|cff1784d1ElvUI|r: Player Frame" },
-    { name = "ElvUF_Target", label = "|cff1784d1ElvUI|r: Target Frame" },
 }
 
 local db
@@ -88,23 +72,20 @@ local rootDB
 local damageEvents = {}
 local currentCharacterKey
 
-local frame = CreateFrame("Frame", "LafeeDamageTrackerFrame", UIParent, "BackdropTemplate")
+local eventFrame = CreateFrame("Frame")
+local anchorFrame = CreateFrame("Frame", "LafeeDamageTrackerAnchorFrame", UIParent, "BackdropTemplate")
+-- Deprecated global retained for addons that referenced the pre-1.2 root frame.
+_G.LafeeDamageTrackerFrame = anchorFrame
+local barFrame
 local minimapButton
 local optionsFrame
 local elapsedSinceUpdate = 0
-local unpackFn = unpack or table.unpack
-local isAnchoredToPowerBar = false
+local externalAnchors = {}
+local isExternallyAnchored = false
 local pendingAnchorUpdate = false
 local anchorRetryAttempts = 0
 local anchorRetryScheduled = false
 local ScheduleAnchorRetry
-
-local function GetElvUI()
-    local engine = _G.ElvUI
-    if type(engine) == "table" then
-        return unpackFn(engine)
-    end
-end
 
 local function CopyDefaults(src, dst)
     for key, value in pairs(src) do
@@ -179,6 +160,9 @@ local function RefreshActiveProfile()
     db = GetCharacterProfiles()[currentCharacterKey]
     local legacyAnchor = db.anchorFrom == nil or db.anchorParent == nil or db.anchorTo == nil
     local legacyOffsetY = db.bcdmOffsetY
+    local legacyInheritWidth = db.inheritWidth == nil
+    local legacyAnchorOffsetX = db.anchorOffsetX == nil
+    local legacyAnchorOffsetY = db.anchorOffsetY == nil
     CopyDefaults(DEFAULTS, db)
     db.width = Clamp(db.width, MIN_WIDTH, MAX_WIDTH)
     db.height = Clamp(db.height, MIN_HEIGHT, MAX_HEIGHT)
@@ -191,12 +175,13 @@ local function RefreshActiveProfile()
         db.anchorPosition = DEFAULTS.anchorPosition
     end
     db.anchorSpacing = Clamp(tonumber(db.anchorSpacing) or DEFAULTS.anchorSpacing, MIN_ANCHOR_SPACING, MAX_ANCHOR_SPACING)
-    db.matchPowerBarWidth = db.matchPowerBarWidth ~= false
-    if type(db.bcdmAnchor) ~= "string" or db.bcdmAnchor == "" then
-        db.bcdmAnchor = DEFAULTS.bcdmAnchor
-    end
+    if legacyInheritWidth then db.inheritWidth = db.matchPowerBarWidth ~= false end
+    db.inheritWidth = db.inheritWidth ~= false
+    db.matchPowerBarWidth = db.inheritWidth
+    db.leftOffset = Clamp(tonumber(db.leftOffset) or DEFAULTS.leftOffset, 0, MAX_EDGE_OFFSET)
+    db.rightOffset = Clamp(tonumber(db.rightOffset) or DEFAULTS.rightOffset, 0, MAX_EDGE_OFFSET)
     if legacyAnchor then
-        db.anchorParent = db.anchorMode == "ELVUI" and "ElvUF_Player" or db.bcdmAnchor
+        db.anchorParent = db.anchorMode == "ELVUI" and "ElvUF_Player" or db.bcdmAnchor or DEFAULTS.anchorParent
         if db.anchorPosition == "BELOW" then
             db.anchorFrom, db.anchorTo = "TOP", "BOTTOM"
             db.bcdmOffsetY = (tonumber(legacyOffsetY) or 0) - db.anchorSpacing
@@ -213,8 +198,12 @@ local function RefreshActiveProfile()
     if type(db.anchorParent) ~= "string" or db.anchorParent == "" then
         db.anchorParent = DEFAULTS.anchorParent
     end
-    db.bcdmOffsetX = Clamp(tonumber(db.bcdmOffsetX) or DEFAULTS.bcdmOffsetX, MIN_BCDM_OFFSET, MAX_BCDM_OFFSET)
-    db.bcdmOffsetY = Clamp(tonumber(db.bcdmOffsetY) or DEFAULTS.bcdmOffsetY, MIN_BCDM_OFFSET, MAX_BCDM_OFFSET)
+    if legacyAnchorOffsetX then db.anchorOffsetX = db.bcdmOffsetX end
+    if legacyAnchorOffsetY then db.anchorOffsetY = db.bcdmOffsetY end
+    db.anchorOffsetX = Clamp(tonumber(db.anchorOffsetX) or DEFAULTS.anchorOffsetX, MIN_ANCHOR_OFFSET, MAX_ANCHOR_OFFSET)
+    db.anchorOffsetY = Clamp(tonumber(db.anchorOffsetY) or DEFAULTS.anchorOffsetY, MIN_ANCHOR_OFFSET, MAX_ANCHOR_OFFSET)
+    db.bcdmOffsetX = db.anchorOffsetX
+    db.bcdmOffsetY = db.anchorOffsetY
     db.minimap.angle = (tonumber(db.minimap.angle) or DEFAULTS.minimap.angle) % 360
     db.minimap.hide = db.minimap.hide == true
     if db.barStyle ~= "CLASSIC" and db.barStyle ~= "SQUARE" then
@@ -252,35 +241,24 @@ local function ResetDamageTotals()
     wipe(damageEvents)
 end
 
-local function GetPowerBarAnchor()
-    if db.anchorMode == "FREE" then return nil end
-    if db.anchorParent == "UIParent" then return UIParent end
-    return _G[db.anchorParent]
-end
-
-local function GetAnchorOffsets()
-    return db.bcdmOffsetX, db.bcdmOffsetY
-end
-
-local function GetBCDMAnchorLabel(anchorName)
-    for _, anchor in ipairs(BCDM_ANCHORS) do
+local function GetAnchorLabel(anchorName)
+    for _, anchor in ipairs(ANCHOR_PARENTS) do
         if anchor.name == anchorName then
             return anchor.label
         end
     end
+    if type(anchorName) == "string" and anchorName:find("^BCDM_") then
+        return "|cFF8080FFBCM|r: " .. anchorName
+    end
+    if type(anchorName) == "string" and (anchorName:find("^ElvUF_") or anchorName:find("^ElvUI_Bar%d+$")) then
+        return "|cff1784d1ElvUI|r: " .. anchorName
+    end
     return anchorName
 end
 
-local function GetDropdownItemText(text, selected)
-    if selected then
-        return "|cff00ff98> |r" .. text
-    end
-    return "   " .. text
-end
-
 local function ApplyFreeFramePosition()
-    frame:ClearAllPoints()
-    frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
+    anchorFrame:ClearAllPoints()
+    anchorFrame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
 end
 
 local function GetBarInset()
@@ -288,101 +266,200 @@ local function GetBarInset()
 end
 
 local function ApplyBarStyle()
-    if not frame.bar then return end
+    if not barFrame then return end
 
     if db.barStyle == "CLASSIC" then
-        frame.bar:SetBackdrop({
+        barFrame:SetBackdrop({
             bgFile = "Interface\\Buttons\\WHITE8X8",
             edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
             edgeSize = 12,
             insets = { left = 3, right = 3, top = 3, bottom = 3 },
         })
-        frame.bar:SetBackdropColor(0.08, 0.08, 0.08, 0.35)
-        frame.bar:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.9)
+        barFrame:SetBackdropColor(0.08, 0.08, 0.08, 0.35)
+        barFrame:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.9)
     else
-        frame.bar:SetBackdrop({
+        barFrame:SetBackdrop({
             bgFile = "Interface\\Buttons\\WHITE8X8",
             edgeFile = "Interface\\Buttons\\WHITE8X8",
             edgeSize = 1,
             insets = { left = 1, right = 1, top = 1, bottom = 1 },
         })
-        frame.bar:SetBackdropColor(0.03, 0.03, 0.03, 0.9)
-        frame.bar:SetBackdropBorderColor(0.02, 0.02, 0.02, 1)
+        barFrame:SetBackdropColor(0.03, 0.03, 0.03, 0.9)
+        barFrame:SetBackdropBorderColor(0.02, 0.02, 0.02, 1)
     end
 
-    frame.bar.phys:ClearAllPoints()
-    frame.bar.phys:SetPoint("LEFT", GetBarInset(), 0)
+    barFrame.phys:ClearAllPoints()
+    barFrame.phys:SetPoint("LEFT", GetBarInset(), 0)
+end
+
+local function IsFrameObject(value)
+    if value == nil then return false end
+    local ok, isFrame = pcall(function()
+        return type(value.SetPoint) == "function"
+            and type(value.IsObjectType) == "function"
+            and value:IsObjectType("Frame")
+    end)
+    return ok and isFrame == true
+end
+
+local function GetAvailableAnchorParents()
+    local anchors = {}
+    local seen = {}
+    for _, anchor in ipairs(ANCHOR_PARENTS) do
+        anchors[#anchors + 1] = { name = anchor.name, label = anchor.label }
+        seen[anchor.name] = true
+    end
+
+    local detected = {}
+    for globalName, value in pairs(_G) do
+        if type(globalName) == "string" and not seen[globalName] then
+            local addonLabel
+            if globalName:find("^BCDM_") then
+                addonLabel = "|cFF8080FFBCM|r"
+            elseif globalName == "ElvUF_Player"
+                or globalName == "ElvUF_Player_HealthBar"
+                or globalName == "ElvUF_Player_PowerBar"
+                or globalName == "ElvUF_Player_CastBar"
+                or globalName == "ElvUF_Player_ClassBar"
+                or globalName == "ElvUF_Player_AdditionalPower"
+                or globalName:find("^ElvUI_Bar%d+$") then
+                addonLabel = "|cff1784d1ElvUI|r"
+            end
+            if addonLabel and IsFrameObject(value) then
+                detected[#detected + 1] = { name = globalName, label = addonLabel .. ": " .. globalName }
+                seen[globalName] = true
+            end
+        end
+    end
+
+    table.sort(detected, function(left, right) return left.name < right.name end)
+    for _, anchor in ipairs(detected) do anchors[#anchors + 1] = anchor end
+    return anchors
+end
+
+local function GetConfiguredAnchor()
+    if db.anchorMode == "FREE" then return nil end
+    if db.anchorParent == "UIParent" then return UIParent end
+    local candidate = _G[db.anchorParent]
+    if IsFrameObject(candidate) then return candidate end
+end
+
+local function GetActiveExternalAnchor()
+    local binding = externalAnchors.Main
+    if binding and IsFrameObject(binding.frame) then
+        return binding.frame, binding.options
+    end
+
+    local configuredAnchor = GetConfiguredAnchor()
+    if not configuredAnchor then return nil end
+    return configuredAnchor, {
+        point = db.anchorFrom,
+        relativePoint = db.anchorTo,
+        x = db.anchorOffsetX,
+        y = db.anchorOffsetY,
+        inheritWidth = db.inheritWidth,
+        leftOffset = db.leftOffset,
+        rightOffset = db.rightOffset,
+    }
+end
+
+local function GetVerticalPoint(point)
+    if point and point:find("TOP", 1, true) then return "TOP" end
+    if point and point:find("BOTTOM", 1, true) then return "BOTTOM" end
+    return "CENTER"
+end
+
+local function GetHorizontalConstraintPoint(verticalPoint, side)
+    if verticalPoint == "CENTER" then return side end
+    return verticalPoint .. side
+end
+
+local function SetInheritedWidthPoints(target, options)
+    local point = GetVerticalPoint(options.point)
+    local relativePoint = GetVerticalPoint(options.relativePoint)
+    local x = options.x or 0
+    local y = options.y or 0
+    local leftOffset = options.leftOffset or 0
+    local rightOffset = options.rightOffset or 0
+
+    anchorFrame:SetPoint(GetHorizontalConstraintPoint(point, "LEFT"), target,
+        GetHorizontalConstraintPoint(relativePoint, "LEFT"), x + leftOffset, y)
+    anchorFrame:SetPoint(GetHorizontalConstraintPoint(point, "RIGHT"), target,
+        GetHorizontalConstraintPoint(relativePoint, "RIGHT"), x - rightOffset, y)
 end
 
 local function ApplyFramePosition()
-    local powerBar = GetPowerBarAnchor()
-    local offsetX, offsetY = GetAnchorOffsets()
+    local externalFrame, options = GetActiveExternalAnchor()
 
-    if powerBar then
+    if externalFrame then
         if InCombatLockdown() then
             pendingAnchorUpdate = true
             return
         end
 
-        isAnchoredToPowerBar = true
-        frame:ClearAllPoints()
-        frame:SetPoint(db.anchorFrom, powerBar, db.anchorTo, offsetX, offsetY)
-        return
+        anchorFrame:ClearAllPoints()
+        local ok = pcall(function()
+            if options.inheritWidth then
+                SetInheritedWidthPoints(externalFrame, options)
+            else
+                anchorFrame:SetPoint(options.point, externalFrame, options.relativePoint, options.x, options.y)
+            end
+        end)
+        if ok then
+            isExternallyAnchored = true
+            return
+        end
     end
 
-    isAnchoredToPowerBar = false
+    isExternallyAnchored = false
     ApplyFreeFramePosition()
-    if db.anchorMode ~= "FREE" and ScheduleAnchorRetry then
+    if (externalAnchors.Main or db.anchorMode ~= "FREE") and ScheduleAnchorRetry then
         ScheduleAnchorRetry()
     end
 end
 
 local function ApplyFrameSize()
-    if isAnchoredToPowerBar and db.matchPowerBarWidth then
-        local anchorFrame = GetPowerBarAnchor()
-        local anchorWidth = anchorFrame and anchorFrame:GetWidth()
-        frame:SetSize(type(anchorWidth) == "number" and anchorWidth > 0 and anchorWidth or db.width, db.height)
-    else
-        frame:SetSize(db.width, db.height)
+    local _, options = GetActiveExternalAnchor()
+    anchorFrame:SetHeight(db.height)
+    if not (isExternallyAnchored and options and options.inheritWidth) then
+        anchorFrame:SetWidth(db.width)
     end
-    frame.bar:ClearAllPoints()
-    frame.bar:SetAllPoints(frame)
     local barInset = GetBarInset()
-    frame.bar.phys:SetHeight(db.height - (barInset * 2))
-    frame.bar.magic:SetHeight(db.height - (barInset * 2))
-    frame.bar.separator:SetHeight(db.height - (barInset * 2))
+    barFrame.phys:SetHeight(db.height - (barInset * 2))
+    barFrame.magic:SetHeight(db.height - (barInset * 2))
+    barFrame.separator:SetHeight(db.height - (barInset * 2))
 end
 
 local function UpdateMinimapButtonPosition()
     if not minimapButton then return end
 
     local angle = math.rad(db.minimap.angle or DEFAULTS.minimap.angle)
-    local radius = 78
+    local radius = (Minimap:GetWidth() * 0.5) + 5
     minimapButton:ClearAllPoints()
     minimapButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * radius, math.sin(angle) * radius)
 end
 
 local function UpdateDisplay()
-    if not frame.bar then return end
+    if not barFrame then return end
 
     local physicalDamage, magicalDamage = GetDamageTotals()
     local totalDamage = physicalDamage + magicalDamage
     local physicalRatio = 0.5
     local magicalRatio = 0.5
-    local fillWidth = math.max(0, frame.bar:GetWidth() - (GetBarInset() * 2))
+    local fillWidth = math.max(0, barFrame:GetWidth() - (GetBarInset() * 2))
 
-    frame:SetAlpha(UnitAffectingCombat("player") and IN_COMBAT_ALPHA or OUT_OF_COMBAT_ALPHA)
+    anchorFrame:SetAlpha(UnitAffectingCombat("player") and IN_COMBAT_ALPHA or OUT_OF_COMBAT_ALPHA)
 
     if totalDamage > 0 then
         physicalRatio = physicalDamage / totalDamage
         magicalRatio = magicalDamage / totalDamage
     end
 
-    frame.bar.phys:SetWidth(fillWidth * physicalRatio)
-    frame.bar.magic:SetWidth(fillWidth * magicalRatio)
-    frame.bar.magic:SetPoint("LEFT", frame.bar.phys, "RIGHT", 0, 0)
-    frame.bar.separator:SetPoint("LEFT", frame.bar.phys, "RIGHT", 0, 0)
-    frame:SetShown(db.shown)
+    barFrame.phys:SetWidth(fillWidth * physicalRatio)
+    barFrame.magic:SetWidth(fillWidth * magicalRatio)
+    barFrame.magic:SetPoint("LEFT", barFrame.phys, "RIGHT", 0, 0)
+    barFrame.separator:SetPoint("LEFT", barFrame.phys, "RIGHT", 0, 0)
+    anchorFrame:SetShown(db.shown)
 end
 
 local function AddDamageTaken(amount, schoolMask)
@@ -404,20 +481,21 @@ local function RefreshLayout()
 end
 
 ScheduleAnchorRetry = function()
-    if not db or db.anchorMode == "FREE" or anchorRetryScheduled or anchorRetryAttempts >= 5 then return end
+    if not db or (db.anchorMode == "FREE" and not externalAnchors.Main)
+        or anchorRetryScheduled or anchorRetryAttempts >= 5 then return end
 
     anchorRetryAttempts = anchorRetryAttempts + 1
     anchorRetryScheduled = true
     C_Timer.After(1, function()
         anchorRetryScheduled = false
-        if not db or db.anchorMode == "FREE" then return end
+        if not db or (db.anchorMode == "FREE" and not externalAnchors.Main) then return end
         RefreshLayout()
     end)
 end
 
-local function ReapplyPowerBarAnchor()
+local function ReapplyAnchor()
     if not db then return end
-    if InCombatLockdown() and db.anchorMode ~= "FREE" then
+    if InCombatLockdown() and (db.anchorMode ~= "FREE" or externalAnchors.Main) then
         pendingAnchorUpdate = true
         return
     end
@@ -491,39 +569,135 @@ local function SetSliderValue(slider, value)
     slider._internalUpdate = nil
 end
 
-local function SkinOptionsFrame()
-    local E, _, _, _, _, _ = GetElvUI()
-    if not E or not E.Skins or optionsFrame._isSkinned then return end
+local function CreateScrollableDropdown(parent, name, width, maxHeight, getEntries, onSelect, getSelectedValue)
+    local rowHeight = 24
+    local button = CreateFrame("Button", name, parent, "BackdropTemplate")
+    button:SetSize(width, 26)
+    button:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+    })
+    button:SetBackdropColor(0.015, 0.015, 0.015, 0.95)
+    button:SetBackdropBorderColor(0.28, 0.28, 0.28, 1)
 
-    local S = E.Skins
+    button.Text = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    button.Text:SetPoint("LEFT", 10, 0)
+    button.Text:SetPoint("RIGHT", -28, 0)
+    button.Text:SetJustifyH("LEFT")
+    button.Text:SetWordWrap(false)
 
-    if S.HandleFrame then
-        pcall(S.HandleFrame, S, optionsFrame)
-    end
-    if S.HandleCheckBox then
-        pcall(S.HandleCheckBox, S, optionsFrame.showCheck)
-        pcall(S.HandleCheckBox, S, optionsFrame.matchPowerBarWidthCheck)
-    end
-    if S.HandleButton then
-        pcall(S.HandleButton, S, optionsFrame.closeButton)
-        pcall(S.HandleButton, S, optionsFrame.copyButton)
+    button.Arrow = button:CreateTexture(nil, "OVERLAY")
+    button.Arrow:SetPoint("RIGHT", -3, 0)
+    button.Arrow:SetSize(22, 22)
+    button.Arrow:SetTexture("Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Up")
+
+    button.Popup = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    button.Popup:SetPoint("TOPLEFT", button, "BOTTOMLEFT", 0, -2)
+    button.Popup:SetFrameStrata("TOOLTIP")
+    button.Popup:SetClampedToScreen(true)
+    button.Popup:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+    })
+    button.Popup:SetBackdropColor(0.01, 0.01, 0.01, 0.98)
+    button.Popup:SetBackdropBorderColor(0.25, 0.25, 0.25, 1)
+    button.Popup:Hide()
+
+    button.ScrollFrame = CreateFrame("ScrollFrame", nil, button.Popup, "UIPanelScrollFrameTemplate")
+    button.ScrollFrame:SetPoint("TOPLEFT", 5, -5)
+    button.ScrollFrame:SetPoint("BOTTOMRIGHT", -27, 5)
+    button.ScrollFrame:EnableMouseWheel(true)
+
+    button.ScrollChild = CreateFrame("Frame", nil, button.ScrollFrame)
+    button.ScrollChild:SetSize(width - 34, 1)
+    button.ScrollFrame:SetScrollChild(button.ScrollChild)
+    button.Rows = {}
+    parent.scrollableDropdowns = parent.scrollableDropdowns or {}
+    parent.scrollableDropdowns[#parent.scrollableDropdowns + 1] = button
+
+    function button:SetText(text)
+        self.Text:SetText(text or "")
     end
 
-    for _, slider in ipairs(optionsFrame.sliders or {}) do
-        if S.HandleSliderFrame then
-            pcall(S.HandleSliderFrame, S, slider)
+    function button:RefreshEntries()
+        local entries = getEntries() or {}
+        for index, entryData in ipairs(entries) do
+            local entry = entryData
+            local row = self.Rows[index]
+            if not row then
+                row = CreateFrame("Button", nil, self.ScrollChild)
+                row:SetHeight(rowHeight)
+                row:SetPoint("LEFT", 0, 0)
+                row:SetPoint("RIGHT", 0, 0)
+                local highlight = row:CreateTexture(nil, "HIGHLIGHT")
+                highlight:SetAllPoints()
+                highlight:SetColorTexture(1, 1, 1, 0.08)
+                row.Text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+                row.Text:SetPoint("LEFT", 8, 0)
+                row.Text:SetPoint("RIGHT", -6, 0)
+                row.Text:SetJustifyH("LEFT")
+                row.Text:SetWordWrap(false)
+                self.Rows[index] = row
+            end
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", 0, -((index - 1) * rowHeight))
+            row:SetPoint("RIGHT", 0, 0)
+            local selectedValue = getSelectedValue and getSelectedValue()
+            local selectedPrefix = selectedValue == entry.name and "|cff00ff98> |r" or "   "
+            row.Text:SetText(selectedPrefix .. (entry.label or entry.name))
+            row:SetScript("OnClick", function()
+                onSelect(entry.name)
+                button.Popup:Hide()
+            end)
+            row:Show()
         end
-        if slider.input and S.HandleEditBox then
-            pcall(S.HandleEditBox, S, slider.input)
-        end
-    end
-    if S.HandleEditBox then
-        pcall(S.HandleEditBox, S, optionsFrame.bcdmAnchorInput)
-        pcall(S.HandleEditBox, S, optionsFrame.bcdmOffsetXInput)
-        pcall(S.HandleEditBox, S, optionsFrame.bcdmOffsetYInput)
+        for index = #entries + 1, #self.Rows do self.Rows[index]:Hide() end
+
+        local contentHeight = math.max(1, #entries * rowHeight)
+        local popupHeight = math.min(maxHeight, contentHeight + 10)
+        self.ScrollChild:SetHeight(contentHeight)
+        self.Popup:SetSize(width, popupHeight)
+        self.ScrollFrame:SetVerticalScroll(0)
+        self.ScrollFrame:UpdateScrollChildRect()
     end
 
-    optionsFrame._isSkinned = true
+    button.ScrollFrame:SetScript("OnMouseWheel", function(self, delta)
+        local nextOffset = self:GetVerticalScroll() - (delta * rowHeight * 3)
+        self:SetVerticalScroll(Clamp(nextOffset, 0, self:GetVerticalScrollRange()))
+    end)
+    button:SetScript("OnClick", function(self)
+        if self.Popup:IsShown() then
+            self.Popup:Hide()
+        else
+            for _, dropdown in ipairs(parent.scrollableDropdowns) do
+                if dropdown ~= self then dropdown.Popup:Hide() end
+            end
+            self:RefreshEntries()
+            self.Popup:Show()
+        end
+    end)
+    button:SetScript("OnDisable", function(self)
+        self.Popup:Hide()
+        self.Text:SetTextColor(0.5, 0.5, 0.5)
+        self.Arrow:SetAlpha(0.45)
+    end)
+    button:SetScript("OnEnable", function(self)
+        self.Text:SetTextColor(1, 1, 1)
+        self.Arrow:SetAlpha(1)
+    end)
+    return button
+end
+
+local function SetControlEnabled(control, enabled)
+    if control.SetEnabled then
+        control:SetEnabled(enabled)
+    elseif enabled and control.Enable then
+        control:Enable()
+    elseif not enabled and control.Disable then
+        control:Disable()
+    end
 end
 
 local function UpdateOptionsControls()
@@ -531,32 +705,52 @@ local function UpdateOptionsControls()
 
     optionsFrame.characterValue:SetText(currentCharacterKey or "-")
     optionsFrame.showCheck:SetChecked(db.shown)
-    UIDropDownMenu_SetText(optionsFrame.barStyleDropdown, optionsFrame.barStyleLabels[db.barStyle])
-    UIDropDownMenu_SetText(optionsFrame.anchorModeDropdown, optionsFrame.anchorModeLabels[db.anchorMode])
-    UIDropDownMenu_SetText(optionsFrame.anchorPositionDropdown, optionsFrame.anchorPositionLabels[db.anchorPosition])
-    UIDropDownMenu_SetText(optionsFrame.bcdmAnchorDropdown, GetBCDMAnchorLabel(db.anchorParent))
-    optionsFrame.bcdmAnchorInput:SetText(db.anchorParent)
-    optionsFrame.bcdmOffsetXInput:SetText(tostring(db.bcdmOffsetX))
-    optionsFrame.bcdmOffsetYInput:SetText(tostring(db.bcdmOffsetY))
-    optionsFrame.matchPowerBarWidthCheck:SetChecked(db.matchPowerBarWidth)
-    SetSliderValue(optionsFrame.anchorSpacingSlider, db.anchorSpacing)
+    optionsFrame.minimapCheck:SetChecked(not db.minimap.hide)
+    local anchored = db.anchorMode ~= "FREE"
+    optionsFrame.barStyleDropdown:SetText(optionsFrame.barStyleLabels[db.barStyle])
+    optionsFrame.anchorModeDropdown:SetText(optionsFrame.anchorModeLabels[db.anchorMode])
+    optionsFrame.anchorPointDropdown:SetText(anchored and db.anchorFrom or db.point)
+    optionsFrame.relativePointDropdown:SetText(anchored and db.anchorTo or db.relativePoint)
+    optionsFrame.anchorFrameDropdown:SetText(GetAnchorLabel(db.anchorParent))
+    optionsFrame.manualAnchorInput:SetText(db.anchorParent)
+    optionsFrame.anchorOffsetXInput:SetText(tostring(db.anchorOffsetX))
+    optionsFrame.anchorOffsetYInput:SetText(tostring(db.anchorOffsetY))
+    optionsFrame.inheritWidthCheck:SetChecked(db.inheritWidth)
+    SetSliderValue(optionsFrame.leftOffsetSlider, db.leftOffset)
+    SetSliderValue(optionsFrame.rightOffsetSlider, db.rightOffset)
     SetSliderValue(optionsFrame.widthSlider, db.width)
     SetSliderValue(optionsFrame.heightSlider, db.height)
     SetSliderValue(optionsFrame.offsetXSlider, db.x)
     SetSliderValue(optionsFrame.offsetYSlider, db.y)
     SetSliderValue(optionsFrame.windowSlider, db.window)
+    SetSliderValue(optionsFrame.minimapAngleSlider, db.minimap.angle)
 
-    local bcdmActive = db.anchorMode ~= "FREE"
-    for _, control in ipairs(optionsFrame.bcdmControls) do
-        control:SetAlpha(bcdmActive and 1 or 0.45)
-        if control.SetEnabled then
-            control:SetEnabled(bcdmActive)
-        end
+    for _, control in ipairs(optionsFrame.externalAnchorControls) do
+        control:SetAlpha(anchored and 1 or 0.45)
+        SetControlEnabled(control, anchored)
     end
-    if bcdmActive then
-        UIDropDownMenu_EnableDropDown(optionsFrame.bcdmAnchorDropdown)
+    if anchored then
+        optionsFrame.anchorFrameDropdown:SetEnabled(true)
     else
-        UIDropDownMenu_DisableDropDown(optionsFrame.bcdmAnchorDropdown)
+        optionsFrame.anchorFrameDropdown:SetEnabled(false)
+    end
+
+    local edgeOffsetsEnabled = anchored and db.inheritWidth
+    for _, slider in ipairs({ optionsFrame.leftOffsetSlider, optionsFrame.rightOffsetSlider }) do
+        SetControlEnabled(slider, edgeOffsetsEnabled)
+        SetControlEnabled(slider.input, edgeOffsetsEnabled)
+        slider:SetAlpha(edgeOffsetsEnabled and 1 or 0.45)
+    end
+
+    local manualWidthEnabled = not (anchored and db.inheritWidth)
+    SetControlEnabled(optionsFrame.widthSlider, manualWidthEnabled)
+    SetControlEnabled(optionsFrame.widthSlider.input, manualWidthEnabled)
+    optionsFrame.widthSlider:SetAlpha(manualWidthEnabled and 1 or 0.45)
+
+    for _, slider in ipairs({ optionsFrame.offsetXSlider, optionsFrame.offsetYSlider }) do
+        SetControlEnabled(slider, not anchored)
+        SetControlEnabled(slider.input, not anchored)
+        slider:SetAlpha(anchored and 0.45 or 1)
     end
 
     local availableKeys = GetAvailableCharacterKeys()
@@ -566,40 +760,128 @@ local function UpdateOptionsControls()
         if not optionsFrame.selectedCopyCharacterKey or not GetCharacterProfiles()[optionsFrame.selectedCopyCharacterKey] then
             optionsFrame.selectedCopyCharacterKey = availableKeys[1]
         end
-        UIDropDownMenu_EnableDropDown(optionsFrame.copySourceDropdown)
+        optionsFrame.copySourceDropdown:SetEnabled(true)
         optionsFrame.copyButton:Enable()
-        UIDropDownMenu_SetText(optionsFrame.copySourceDropdown, optionsFrame.selectedCopyCharacterKey)
+        optionsFrame.copySourceDropdown:SetText(optionsFrame.selectedCopyCharacterKey)
     else
         optionsFrame.selectedCopyCharacterKey = nil
-        UIDropDownMenu_DisableDropDown(optionsFrame.copySourceDropdown)
+        optionsFrame.copySourceDropdown:SetEnabled(false)
         optionsFrame.copyButton:Disable()
-        UIDropDownMenu_SetText(optionsFrame.copySourceDropdown, L.NO_OTHER_CHARACTER)
+        optionsFrame.copySourceDropdown:SetText(L.NO_OTHER_CHARACTER)
     end
+end
+
+local function SelectOptionsPage(pageName)
+    for _, dropdown in ipairs(optionsFrame.scrollableDropdowns or {}) do dropdown.Popup:Hide() end
+    optionsFrame.selectedPage = pageName
+    for name, controls in pairs(optionsFrame.pageControls) do
+        local selected = name == pageName
+        for _, control in ipairs(controls) do control:SetShown(selected) end
+        local button = optionsFrame.pageButtons[name]
+        button.Selected:SetShown(selected)
+        button.Text:SetTextColor(selected and 1 or 0.9, selected and 0.82 or 0.9, selected and 0 or 0.9)
+    end
+    optionsFrame.pageTitle:SetText(optionsFrame.pageLabels[pageName])
 end
 
 local function CreateOptionsFrame()
     optionsFrame = CreateFrame("Frame", "LafeeDamageTrackerOptionsFrame", UIParent, "BackdropTemplate")
-    optionsFrame:SetSize(410, 790)
+    optionsFrame:SetSize(1020, 760)
     optionsFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    optionsFrame:SetFrameStrata("DIALOG")
     optionsFrame:SetClampedToScreen(true)
     optionsFrame:SetMovable(true)
     optionsFrame:SetBackdrop({
-        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
     })
-    optionsFrame:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
+    optionsFrame:SetBackdropColor(0.035, 0.035, 0.035, 0.82)
+    optionsFrame:SetBackdropBorderColor(0.24, 0.24, 0.24, 0.95)
     optionsFrame:Hide()
 
-    optionsFrame.title = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    optionsFrame.title:SetPoint("TOP", 0, -14)
-    optionsFrame.title:SetText(L.ADDON_TITLE)
+    optionsFrame.titleBar = CreateFrame("Frame", nil, optionsFrame, "BackdropTemplate")
+    optionsFrame.titleBar:SetPoint("TOPLEFT", 1, -1)
+    optionsFrame.titleBar:SetPoint("TOPRIGHT", -1, -1)
+    optionsFrame.titleBar:SetHeight(54)
+    optionsFrame.titleBar:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+    optionsFrame.titleBar:SetBackdropColor(0.01, 0.01, 0.01, 0.94)
 
-    optionsFrame.dragHandle = CreateFrame("Button", nil, optionsFrame)
-    optionsFrame.dragHandle:SetPoint("TOPLEFT", 10, -8)
-    optionsFrame.dragHandle:SetPoint("TOPRIGHT", -10, -8)
-    optionsFrame.dragHandle:SetHeight(26)
+    optionsFrame.logo = optionsFrame.titleBar:CreateTexture(nil, "ARTWORK")
+    optionsFrame.logo:SetPoint("LEFT", 16, 0)
+    optionsFrame.logo:SetSize(34, 34)
+    optionsFrame.logo:SetTexture("Interface\\Icons\\INV_Shield_06")
+    optionsFrame.logo:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    optionsFrame.title = optionsFrame.titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    optionsFrame.title:SetPoint("LEFT", optionsFrame.logo, "RIGHT", 10, 1)
+    optionsFrame.title:SetText(L.ADDON_TITLE)
+    optionsFrame.title:SetTextColor(1, 0.82, 0)
+
+    optionsFrame.version = optionsFrame.titleBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    optionsFrame.version:SetPoint("LEFT", optionsFrame.title, "RIGHT", 12, -1)
+    optionsFrame.version:SetText("1.2.0")
+    optionsFrame.version:SetTextColor(0.58, 0.6, 0.68)
+
+    optionsFrame.navigation = CreateFrame("Frame", nil, optionsFrame, "BackdropTemplate")
+    optionsFrame.navigation:SetPoint("TOPLEFT", 12, -66)
+    optionsFrame.navigation:SetPoint("BOTTOMLEFT", 12, 46)
+    optionsFrame.navigation:SetWidth(220)
+    optionsFrame.navigation:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+    })
+    optionsFrame.navigation:SetBackdropColor(0.02, 0.02, 0.02, 0.62)
+    optionsFrame.navigation:SetBackdropBorderColor(0.18, 0.18, 0.18, 0.9)
+
+    optionsFrame.contentBackground = CreateFrame("Frame", nil, optionsFrame, "BackdropTemplate")
+    optionsFrame.contentBackground:SetPoint("TOPLEFT", optionsFrame.navigation, "TOPRIGHT", 14, 0)
+    optionsFrame.contentBackground:SetPoint("BOTTOMRIGHT", -14, 46)
+    optionsFrame.contentBackground:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+    optionsFrame.contentBackground:SetBackdropColor(0.015, 0.015, 0.015, 0.32)
+
+    optionsFrame.pageTitle = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    optionsFrame.pageTitle:SetPoint("TOPLEFT", optionsFrame.contentBackground, "TOPLEFT", 18, -16)
+    optionsFrame.pageTitle:SetTextColor(1, 0.82, 0)
+
+    optionsFrame.pageButtons = {}
+    optionsFrame.pageLabels = {}
+    optionsFrame.pageControls = { GENERAL = {}, APPEARANCE = {}, POSITIONING = {} }
+    local previousButton
+    for _, pageInfo in ipairs({
+        { key = "GENERAL", text = L.GENERAL },
+        { key = "APPEARANCE", text = L.APPEARANCE },
+        { key = "POSITIONING", text = L.POSITIONING },
+    }) do
+        local pageKey = pageInfo.key
+        local button = CreateFrame("Button", nil, optionsFrame.navigation)
+        button:SetSize(204, 38)
+        if previousButton then
+            button:SetPoint("TOP", previousButton, "BOTTOM", 0, -3)
+        else
+            button:SetPoint("TOP", 0, -12)
+        end
+        button.Selected = button:CreateTexture(nil, "BACKGROUND")
+        button.Selected:SetAllPoints()
+        button.Selected:SetColorTexture(1, 0.82, 0, 0.15)
+        button.Selected:Hide()
+        local highlight = button:CreateTexture(nil, "HIGHLIGHT")
+        highlight:SetAllPoints()
+        highlight:SetColorTexture(1, 1, 1, 0.07)
+        button.Text = button:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+        button.Text:SetPoint("LEFT", 16, 0)
+        button.Text:SetPoint("RIGHT", -10, 0)
+        button.Text:SetJustifyH("LEFT")
+        button.Text:SetText(pageInfo.text)
+        button:SetScript("OnClick", function() SelectOptionsPage(pageKey) end)
+        optionsFrame.pageButtons[pageKey] = button
+        optionsFrame.pageLabels[pageKey] = pageInfo.text
+        previousButton = button
+    end
+
+    optionsFrame.dragHandle = optionsFrame.titleBar
+    optionsFrame.dragHandle:EnableMouse(true)
     optionsFrame.dragHandle:RegisterForDrag("LeftButton")
     optionsFrame.dragHandle:SetScript("OnDragStart", function()
         optionsFrame:StartMoving()
@@ -608,17 +890,37 @@ local function CreateOptionsFrame()
         optionsFrame:StopMovingOrSizing()
     end)
 
+    local function CreateSectionHeader(text, y)
+        local section = CreateFrame("Frame", nil, optionsFrame, "BackdropTemplate")
+        section:SetPoint("TOPLEFT", 252, y)
+        section:SetPoint("TOPRIGHT", -24, y)
+        section:SetHeight(38)
+        section:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+        section:SetBackdropColor(0.01, 0.01, 0.01, 0.78)
+        section.text = section:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        section.text:SetPoint("LEFT", 14, 0)
+        section.text:SetText(text)
+        section.text:SetTextColor(1, 0.82, 0)
+        return section
+    end
+
+    optionsFrame.generalSection = CreateSectionHeader(L.GENERAL_SETTINGS, -112)
+    optionsFrame.profileSection = CreateSectionHeader(L.PROFILES_ACTIONS, -430)
+    optionsFrame.appearanceSection = CreateSectionHeader(L.APPEARANCE, -112)
+    optionsFrame.anchorSection = CreateSectionHeader(L.ANCHORING, -112)
+    optionsFrame.freePositionSection = CreateSectionHeader(L.FREE_POSITION, -550)
+
     optionsFrame.characterLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    optionsFrame.characterLabel:SetPoint("TOPLEFT", 18, -42)
+    optionsFrame.characterLabel:SetPoint("TOPLEFT", 270, -170)
     optionsFrame.characterLabel:SetText(L.ACTIVE_CHARACTER)
 
     optionsFrame.characterValue = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     optionsFrame.characterValue:SetPoint("TOPLEFT", optionsFrame.characterLabel, "BOTTOMLEFT", 0, -4)
     optionsFrame.characterValue:SetJustifyH("LEFT")
-    optionsFrame.characterValue:SetWidth(370)
+    optionsFrame.characterValue:SetWidth(680)
 
     optionsFrame.showCheck = CreateFrame("CheckButton", nil, optionsFrame, "UICheckButtonTemplate")
-    optionsFrame.showCheck:SetPoint("TOPLEFT", 18, -86)
+    optionsFrame.showCheck:SetPoint("TOPLEFT", 270, -220)
     optionsFrame.showCheck.text = optionsFrame.showCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     optionsFrame.showCheck.text:SetPoint("LEFT", optionsFrame.showCheck, "RIGHT", 4, 1)
     optionsFrame.showCheck.text:SetText(L.SHOW_BAR)
@@ -627,156 +929,139 @@ local function CreateOptionsFrame()
         UpdateDisplay()
     end)
 
+    optionsFrame.minimapCheck = CreateFrame("CheckButton", nil, optionsFrame, "UICheckButtonTemplate")
+    optionsFrame.minimapCheck:SetPoint("TOPLEFT", 270, -260)
+    optionsFrame.minimapCheck.text = optionsFrame.minimapCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    optionsFrame.minimapCheck.text:SetPoint("LEFT", optionsFrame.minimapCheck, "RIGHT", 4, 1)
+    optionsFrame.minimapCheck.text:SetText(L.SHOW_MINIMAP_BUTTON)
+    optionsFrame.minimapCheck:SetScript("OnClick", function(self)
+        db.minimap.hide = not self:GetChecked()
+        if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
+    end)
+
     optionsFrame.anchorModeLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    optionsFrame.anchorModeLabel:SetPoint("TOPLEFT", 18, -120)
+    optionsFrame.anchorModeLabel:SetPoint("TOPLEFT", 270, -170)
     optionsFrame.anchorModeLabel:SetText(L.ANCHOR_MODE)
 
     optionsFrame.anchorModeLabels = {
         FREE = L.FREE,
-        ANCHORED = "Anchored",
-        BETTER_COOLDOWN_MANAGER = "BetterCooldownManager",
-        ELVUI = "ElvUI",
+        ANCHORED = L.ANCHORED,
     }
 
     optionsFrame.barStyleLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    optionsFrame.barStyleLabel:SetPoint("TOPLEFT", 260, -120)
+    optionsFrame.barStyleLabel:SetPoint("TOPLEFT", 270, -170)
     optionsFrame.barStyleLabel:SetText(L.STYLE)
 
     optionsFrame.barStyleLabels = {
         CLASSIC = L.CLASSIC,
         SQUARE = L.SQUARE,
     }
-    optionsFrame.barStyleDropdown = CreateFrame("Frame", "LDTBarStyleDropdown", optionsFrame, "UIDropDownMenuTemplate")
-    optionsFrame.barStyleDropdown:SetPoint("TOPLEFT", optionsFrame.barStyleLabel, "BOTTOMLEFT", -16, -4)
-    UIDropDownMenu_SetWidth(optionsFrame.barStyleDropdown, 120)
-    UIDropDownMenu_Initialize(optionsFrame.barStyleDropdown, function(_, level)
-        for _, style in ipairs({ "CLASSIC", "SQUARE" }) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.notCheckable = true
-            info.text = GetDropdownItemText(optionsFrame.barStyleLabels[style], db.barStyle == style)
-            info.func = function()
-                db.barStyle = style
-                ApplyBarStyle()
-                ApplyFrameSize()
-                UpdateDisplay()
-                UpdateOptionsControls()
-            end
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    optionsFrame.barStyleDropdown = CreateScrollableDropdown(optionsFrame, "LDTBarStyleDropdown", 300, 120,
+        function()
+            return {
+                { name = "SQUARE", label = optionsFrame.barStyleLabels.SQUARE },
+                { name = "CLASSIC", label = optionsFrame.barStyleLabels.CLASSIC },
+            }
+        end, function(style)
+            db.barStyle = style
+            ApplyBarStyle()
+            ApplyFrameSize()
+            UpdateDisplay()
+            UpdateOptionsControls()
+        end, function() return db.barStyle end)
+    optionsFrame.barStyleDropdown:SetPoint("TOPLEFT", optionsFrame.barStyleLabel, "BOTTOMLEFT", 0, -6)
 
-    optionsFrame.anchorModeDropdown = CreateFrame("Frame", "LDTAnchorModeDropdown", optionsFrame, "UIDropDownMenuTemplate")
-    optionsFrame.anchorModeDropdown:SetPoint("TOPLEFT", optionsFrame.anchorModeLabel, "BOTTOMLEFT", -16, -4)
-    UIDropDownMenu_SetWidth(optionsFrame.anchorModeDropdown, 220)
-    UIDropDownMenu_Initialize(optionsFrame.anchorModeDropdown, function(_, level)
-        for _, mode in ipairs({ "FREE", "ANCHORED" }) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.notCheckable = true
-            info.text = GetDropdownItemText(optionsFrame.anchorModeLabels[mode], db.anchorMode == mode)
-            info.func = function()
-                if db.anchorMode == mode then return end
-                db.anchorMode = mode
-                if mode == "BETTER_COOLDOWN_MANAGER" then
-                    db.anchorParent = db.bcdmAnchor
-                elseif mode == "ELVUI" then
-                    db.anchorParent = "ElvUF_Player"
-                end
-                ReapplyPowerBarAnchor()
-                UpdateOptionsControls()
-                print("|cffffd100" .. L.ADDON_TITLE .. "|r : " .. L.INTEGRATION_CHANGED)
-            end
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    optionsFrame.anchorModeDropdown = CreateScrollableDropdown(optionsFrame, "LDTAnchorModeDropdown", 300, 120,
+        function()
+            return {
+                { name = "FREE", label = optionsFrame.anchorModeLabels.FREE },
+                { name = "ANCHORED", label = optionsFrame.anchorModeLabels.ANCHORED },
+            }
+        end, function(mode)
+            if db.anchorMode == mode then return end
+            db.anchorMode = mode
+            ReapplyAnchor()
+            UpdateOptionsControls()
+        end, function() return db.anchorMode end)
+    optionsFrame.anchorModeDropdown:SetPoint("TOPLEFT", optionsFrame.anchorModeLabel, "BOTTOMLEFT", 0, -6)
 
-    optionsFrame.anchorPositionLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    optionsFrame.anchorPositionLabel:SetPoint("TOPLEFT", optionsFrame.anchorModeDropdown, "BOTTOMLEFT", 16, -6)
-    optionsFrame.anchorPositionLabel:SetText(L.POSITION)
+    optionsFrame.anchorPointLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    optionsFrame.anchorPointLabel:SetPoint("TOPLEFT", 270, -320)
+    optionsFrame.anchorPointLabel:SetText(L.POINT)
+    optionsFrame.anchorPointDropdown = CreateScrollableDropdown(optionsFrame, "LDTAnchorPointDropdown", 300, 250,
+        function()
+            local entries = {}
+            for _, point in ipairs(ANCHOR_POINTS) do entries[#entries + 1] = { name = point, label = point } end
+            return entries
+        end, function(point)
+            if db.anchorMode == "FREE" then db.point = point else db.anchorFrom = point end
+            ReapplyAnchor()
+            UpdateOptionsControls()
+        end, function() return db.anchorMode == "FREE" and db.point or db.anchorFrom end)
+    optionsFrame.anchorPointDropdown:SetPoint("TOPLEFT", optionsFrame.anchorPointLabel, "BOTTOMLEFT", 0, -6)
 
-    optionsFrame.anchorPositionLabels = {
-        ABOVE = L.ABOVE,
-        BELOW = L.BELOW,
-    }
-    optionsFrame.anchorPositionDropdown = CreateFrame("Frame", "LDTAnchorPositionDropdown", optionsFrame, "UIDropDownMenuTemplate")
-    optionsFrame.anchorPositionDropdown:SetPoint("TOPLEFT", optionsFrame.anchorPositionLabel, "BOTTOMLEFT", -16, -4)
-    UIDropDownMenu_SetWidth(optionsFrame.anchorPositionDropdown, 180)
-    UIDropDownMenu_Initialize(optionsFrame.anchorPositionDropdown, function(_, level)
-        for _, position in ipairs({ "ABOVE", "BELOW" }) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.notCheckable = true
-            info.text = GetDropdownItemText(optionsFrame.anchorPositionLabels[position], db.anchorPosition == position)
-            info.func = function()
-                db.anchorPosition = position
-                if position == "BELOW" then
-                    db.anchorFrom, db.anchorTo = "TOP", "BOTTOM"
-                else
-                    db.anchorFrom, db.anchorTo = "BOTTOM", "TOP"
-                end
-                ReapplyPowerBarAnchor()
-                UpdateOptionsControls()
-            end
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    optionsFrame.relativePointLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    optionsFrame.relativePointLabel:SetPoint("TOPLEFT", 600, -320)
+    optionsFrame.relativePointLabel:SetText(L.RELATIVE_POINT)
+    optionsFrame.relativePointDropdown = CreateScrollableDropdown(optionsFrame, "LDTRelativePointDropdown", 300, 250,
+        function()
+            local entries = {}
+            for _, point in ipairs(ANCHOR_POINTS) do entries[#entries + 1] = { name = point, label = point } end
+            return entries
+        end, function(point)
+            if db.anchorMode == "FREE" then db.relativePoint = point else db.anchorTo = point end
+            ReapplyAnchor()
+            UpdateOptionsControls()
+        end, function() return db.anchorMode == "FREE" and db.relativePoint or db.anchorTo end)
+    optionsFrame.relativePointDropdown:SetPoint("TOPLEFT", optionsFrame.relativePointLabel, "BOTTOMLEFT", 0, -6)
 
-    optionsFrame.bcdmAnchorLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    optionsFrame.bcdmAnchorLabel:SetPoint("TOPLEFT", 18, -230)
-    optionsFrame.bcdmAnchorLabel:SetText(L.BCDM_ANCHOR)
+    optionsFrame.anchorFrameLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    optionsFrame.anchorFrameLabel:SetPoint("TOPLEFT", 270, -240)
+    optionsFrame.anchorFrameLabel:SetText(L.ANCHOR_FRAME)
 
-    optionsFrame.bcdmAnchorDropdown = CreateFrame("Frame", "LDTBCDAnchorDropdown", optionsFrame, "UIDropDownMenuTemplate")
-    optionsFrame.bcdmAnchorDropdown:SetPoint("TOPLEFT", optionsFrame.bcdmAnchorLabel, "BOTTOMLEFT", -16, -4)
-    UIDropDownMenu_SetWidth(optionsFrame.bcdmAnchorDropdown, 200)
-    UIDropDownMenu_Initialize(optionsFrame.bcdmAnchorDropdown, function(_, level)
-        for _, anchor in ipairs(BCDM_ANCHORS) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.notCheckable = true
-            info.text = GetDropdownItemText(anchor.label, db.anchorParent == anchor.name)
-            info.func = function()
-                db.bcdmAnchor = anchor.name
-                db.anchorParent = anchor.name
-                ReapplyPowerBarAnchor()
-                UpdateOptionsControls()
-            end
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    optionsFrame.anchorFrameDropdown = CreateScrollableDropdown(optionsFrame, "LDTAnchorFrameDropdown", 300, 360,
+        GetAvailableAnchorParents, function(anchorName)
+            db.anchorParent = anchorName
+            ReapplyAnchor()
+            UpdateOptionsControls()
+        end, function() return db.anchorParent end)
+    optionsFrame.anchorFrameDropdown:SetPoint("TOPLEFT", optionsFrame.anchorFrameLabel, "BOTTOMLEFT", 0, -6)
 
-    optionsFrame.bcdmAnchorInputLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    optionsFrame.bcdmAnchorInputLabel:SetPoint("TOPLEFT", 260, -230)
-    optionsFrame.bcdmAnchorInputLabel:SetText(L.MANUAL_FRAME)
+    optionsFrame.manualAnchorLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    optionsFrame.manualAnchorLabel:SetPoint("TOPLEFT", 600, -240)
+    optionsFrame.manualAnchorLabel:SetText(L.MANUAL_FRAME)
 
-    optionsFrame.bcdmAnchorInput = CreateFrame("EditBox", "LDTBCDAnchorInput", optionsFrame, "InputBoxTemplate")
-    optionsFrame.bcdmAnchorInput:SetAutoFocus(false)
-    optionsFrame.bcdmAnchorInput:SetMaxLetters(80)
-    optionsFrame.bcdmAnchorInput:SetSize(112, 20)
-    optionsFrame.bcdmAnchorInput:SetPoint("TOPLEFT", optionsFrame.bcdmAnchorInputLabel, "BOTTOMLEFT", 0, -4)
-    local function SaveBCDMAnchorName(self)
+    optionsFrame.manualAnchorInput = CreateFrame("EditBox", "LDTManualAnchorInput", optionsFrame, "InputBoxTemplate")
+    optionsFrame.manualAnchorInput:SetAutoFocus(false)
+    optionsFrame.manualAnchorInput:SetMaxLetters(80)
+    optionsFrame.manualAnchorInput:SetSize(300, 26)
+    optionsFrame.manualAnchorInput:SetPoint("TOPLEFT", optionsFrame.manualAnchorLabel, "BOTTOMLEFT", 0, -6)
+    local function SaveAnchorName(self)
         local anchorName = (self:GetText() or ""):match("^%s*(.-)%s*$")
         if anchorName == "" then
-            anchorName = DEFAULTS.bcdmAnchor
+            anchorName = DEFAULTS.anchorParent
         end
         local changed = db.anchorParent ~= anchorName
-        db.bcdmAnchor = anchorName
         db.anchorParent = anchorName
         self:SetText(anchorName)
         if changed then
-            ReapplyPowerBarAnchor()
+            ReapplyAnchor()
             UpdateOptionsControls()
         end
     end
-    optionsFrame.bcdmAnchorInput:SetScript("OnEnterPressed", function(self)
-        SaveBCDMAnchorName(self)
+    optionsFrame.manualAnchorInput:SetScript("OnEnterPressed", function(self)
+        SaveAnchorName(self)
         self:ClearFocus()
     end)
-    optionsFrame.bcdmAnchorInput:SetScript("OnEscapePressed", function(self)
+    optionsFrame.manualAnchorInput:SetScript("OnEscapePressed", function(self)
         self:SetText(db.anchorParent)
         self:ClearFocus()
     end)
-    optionsFrame.bcdmAnchorInput:SetScript("OnEditFocusLost", SaveBCDMAnchorName)
+    optionsFrame.manualAnchorInput:SetScript("OnEditFocusLost", SaveAnchorName)
 
-    local function CreateBCDMOffsetInput(name, label, x, key)
+    local function CreateAnchorOffsetInput(name, label, x, key)
         local labelFrame = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        labelFrame:SetPoint("TOPLEFT", x, -294)
+        labelFrame:SetPoint("TOPLEFT", x, -405)
         labelFrame:SetText(label)
 
         local input = CreateFrame("EditBox", name, optionsFrame, "InputBoxTemplate")
@@ -788,10 +1073,12 @@ local function CreateOptionsFrame()
         input:SetPoint("LEFT", labelFrame, "RIGHT", 4, 0)
 
         local function SaveValue()
-            local value = Clamp(tonumber(input:GetText()) or db[key], MIN_BCDM_OFFSET, MAX_BCDM_OFFSET)
+            local value = Clamp(tonumber(input:GetText()) or db[key], MIN_ANCHOR_OFFSET, MAX_ANCHOR_OFFSET)
             db[key] = math.floor(value + 0.5)
+            db.bcdmOffsetX = db.anchorOffsetX
+            db.bcdmOffsetY = db.anchorOffsetY
             input:SetText(tostring(db[key]))
-            ReapplyPowerBarAnchor()
+            ReapplyAnchor()
         end
 
         input:SetScript("OnEnterPressed", function(self)
@@ -807,40 +1094,56 @@ local function CreateOptionsFrame()
         return input
     end
 
-    optionsFrame.bcdmOffsetXInput = CreateBCDMOffsetInput("LDTBCDOffsetXInput", L.OFFSET_X, 18, "bcdmOffsetX")
-    optionsFrame.bcdmOffsetYInput = CreateBCDMOffsetInput("LDTBCDOffsetYInput", L.OFFSET_Y, 190, "bcdmOffsetY")
-    optionsFrame.bcdmControls = {
-        optionsFrame.bcdmAnchorLabel,
-        optionsFrame.bcdmAnchorDropdown,
-        optionsFrame.bcdmAnchorInputLabel,
-        optionsFrame.bcdmAnchorInput,
-        optionsFrame.bcdmOffsetXInput.label,
-        optionsFrame.bcdmOffsetXInput,
-        optionsFrame.bcdmOffsetYInput.label,
-        optionsFrame.bcdmOffsetYInput,
+    optionsFrame.anchorOffsetXInput = CreateAnchorOffsetInput("LDTAnchorOffsetXInput", L.OFFSET_X, 270, "anchorOffsetX")
+    optionsFrame.anchorOffsetYInput = CreateAnchorOffsetInput("LDTAnchorOffsetYInput", L.OFFSET_Y, 600, "anchorOffsetY")
+    optionsFrame.externalAnchorControls = {
+        optionsFrame.anchorFrameLabel,
+        optionsFrame.anchorFrameDropdown,
+        optionsFrame.manualAnchorLabel,
+        optionsFrame.manualAnchorInput,
+        optionsFrame.anchorOffsetXInput.label,
+        optionsFrame.anchorOffsetXInput,
+        optionsFrame.anchorOffsetYInput.label,
+        optionsFrame.anchorOffsetYInput,
     }
 
-    optionsFrame.anchorSpacingSlider = CreateSlider(optionsFrame, "LDTAnchorSpacingSlider", L.SPACING_PX, MIN_ANCHOR_SPACING, MAX_ANCHOR_SPACING, 1, 220)
-    optionsFrame.anchorSpacingSlider:SetPoint("TOPLEFT", 32, -340)
-    optionsFrame.anchorSpacingSlider:SetScript("OnValueChanged", function(self, value)
-        if self._internalUpdate then return end
-        db.anchorSpacing = math.floor(value + 0.5)
-        ReapplyPowerBarAnchor()
-        self.input:SetText(tostring(db.anchorSpacing))
+    optionsFrame.inheritWidthCheck = CreateFrame("CheckButton", nil, optionsFrame, "UICheckButtonTemplate")
+    optionsFrame.inheritWidthCheck:SetPoint("TOPLEFT", 270, -445)
+    optionsFrame.inheritWidthCheck.text = optionsFrame.inheritWidthCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    optionsFrame.inheritWidthCheck.text:SetPoint("LEFT", optionsFrame.inheritWidthCheck, "RIGHT", 4, 1)
+    optionsFrame.inheritWidthCheck.text:SetText(L.INHERIT_WIDTH)
+    optionsFrame.inheritWidthCheck:SetScript("OnClick", function(self)
+        db.inheritWidth = self:GetChecked() and true or false
+        db.matchPowerBarWidth = db.inheritWidth
+        ReapplyAnchor()
+        UpdateOptionsControls()
     end)
 
-    optionsFrame.matchPowerBarWidthCheck = CreateFrame("CheckButton", nil, optionsFrame, "UICheckButtonTemplate")
-    optionsFrame.matchPowerBarWidthCheck:SetPoint("TOPLEFT", 18, -380)
-    optionsFrame.matchPowerBarWidthCheck.text = optionsFrame.matchPowerBarWidthCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    optionsFrame.matchPowerBarWidthCheck.text:SetPoint("LEFT", optionsFrame.matchPowerBarWidthCheck, "RIGHT", 4, 1)
-    optionsFrame.matchPowerBarWidthCheck.text:SetText(L.MATCH_BAR_WIDTH)
-    optionsFrame.matchPowerBarWidthCheck:SetScript("OnClick", function(self)
-        db.matchPowerBarWidth = self:GetChecked() and true or false
-        ReapplyPowerBarAnchor()
+    optionsFrame.leftOffsetSlider = CreateSlider(optionsFrame, "LDTLeftOffsetSlider", L.LEFT_OFFSET, 0, MAX_EDGE_OFFSET, 1, 150)
+    optionsFrame.leftOffsetSlider:SetPoint("TOPLEFT", 300, -495)
+    optionsFrame.leftOffsetSlider:SetScript("OnValueChanged", function(self, value)
+        if self._internalUpdate then return end
+        db.leftOffset = math.floor(value + 0.5)
+        ReapplyAnchor()
+        self.input:SetText(tostring(db.leftOffset))
     end)
+
+    optionsFrame.rightOffsetSlider = CreateSlider(optionsFrame, "LDTRightOffsetSlider", L.RIGHT_OFFSET, 0, MAX_EDGE_OFFSET, 1, 150)
+    optionsFrame.rightOffsetSlider:SetPoint("TOPLEFT", 650, -495)
+    optionsFrame.rightOffsetSlider:SetScript("OnValueChanged", function(self, value)
+        if self._internalUpdate then return end
+        db.rightOffset = math.floor(value + 0.5)
+        ReapplyAnchor()
+        self.input:SetText(tostring(db.rightOffset))
+    end)
+    table.insert(optionsFrame.externalAnchorControls, optionsFrame.inheritWidthCheck)
+    table.insert(optionsFrame.externalAnchorControls, optionsFrame.leftOffsetSlider)
+    table.insert(optionsFrame.externalAnchorControls, optionsFrame.leftOffsetSlider.input)
+    table.insert(optionsFrame.externalAnchorControls, optionsFrame.rightOffsetSlider)
+    table.insert(optionsFrame.externalAnchorControls, optionsFrame.rightOffsetSlider.input)
 
     optionsFrame.widthSlider = CreateSlider(optionsFrame, "LDTWidthSlider", L.WIDTH, MIN_WIDTH, MAX_WIDTH, 10, 220)
-    optionsFrame.widthSlider:SetPoint("TOPLEFT", 32, -420)
+    optionsFrame.widthSlider:SetPoint("TOPLEFT", 300, -270)
     optionsFrame.widthSlider:SetScript("OnValueChanged", function(self, value)
         if self._internalUpdate then return end
         db.width = math.floor(value + 0.5)
@@ -849,7 +1152,7 @@ local function CreateOptionsFrame()
     end)
 
     optionsFrame.heightSlider = CreateSlider(optionsFrame, "LDTHeightSlider", L.HEIGHT, MIN_HEIGHT, MAX_HEIGHT, 1, 220)
-    optionsFrame.heightSlider:SetPoint("TOP", optionsFrame.widthSlider, "BOTTOM", 0, -34)
+    optionsFrame.heightSlider:SetPoint("TOPLEFT", 650, -270)
     optionsFrame.heightSlider:SetScript("OnValueChanged", function(self, value)
         if self._internalUpdate then return end
         db.height = math.floor(value + 0.5)
@@ -858,7 +1161,7 @@ local function CreateOptionsFrame()
     end)
 
     optionsFrame.offsetXSlider = CreateSlider(optionsFrame, "LDTOffsetXSlider", L.OFFSET_X, -600, 600, 5, 220)
-    optionsFrame.offsetXSlider:SetPoint("TOP", optionsFrame.heightSlider, "BOTTOM", 0, -34)
+    optionsFrame.offsetXSlider:SetPoint("TOPLEFT", 300, -620)
     optionsFrame.offsetXSlider:SetScript("OnValueChanged", function(self, value)
         if self._internalUpdate then return end
         db.x = math.floor(value + 0.5)
@@ -867,7 +1170,7 @@ local function CreateOptionsFrame()
     end)
 
     optionsFrame.offsetYSlider = CreateSlider(optionsFrame, "LDTOffsetYSlider", L.OFFSET_Y, -400, 400, 5, 220)
-    optionsFrame.offsetYSlider:SetPoint("TOP", optionsFrame.offsetXSlider, "BOTTOM", 0, -34)
+    optionsFrame.offsetYSlider:SetPoint("TOPLEFT", 650, -620)
     optionsFrame.offsetYSlider:SetScript("OnValueChanged", function(self, value)
         if self._internalUpdate then return end
         db.y = math.floor(value + 0.5)
@@ -876,7 +1179,7 @@ local function CreateOptionsFrame()
     end)
 
     optionsFrame.windowSlider = CreateSlider(optionsFrame, "LDTWindowSlider", L.WINDOW_SECONDS, MIN_WINDOW, MAX_WINDOW, 1, 220)
-    optionsFrame.windowSlider:SetPoint("TOP", optionsFrame.offsetYSlider, "BOTTOM", 0, -34)
+    optionsFrame.windowSlider:SetPoint("TOPLEFT", 300, -330)
     optionsFrame.windowSlider:SetScript("OnValueChanged", function(self, value)
         if self._internalUpdate then return end
         db.window = Clamp(math.floor(value + 0.5), MIN_WINDOW, MAX_WINDOW)
@@ -884,31 +1187,35 @@ local function CreateOptionsFrame()
         self.input:SetText(tostring(db.window))
     end)
 
+    optionsFrame.minimapAngleSlider = CreateSlider(optionsFrame, "LDTMinimapAngleSlider", L.MINIMAP_ANGLE, 0, 359, 1, 220)
+    optionsFrame.minimapAngleSlider:SetPoint("TOPLEFT", 650, -330)
+    optionsFrame.minimapAngleSlider:SetScript("OnValueChanged", function(self, value)
+        if self._internalUpdate then return end
+        db.minimap.angle = math.floor(value + 0.5) % 360
+        UpdateMinimapButtonPosition()
+        self.input:SetText(tostring(db.minimap.angle))
+    end)
+
     optionsFrame.copyLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    optionsFrame.copyLabel:SetPoint("TOPLEFT", optionsFrame.windowSlider, "BOTTOMLEFT", -14, -32)
+    optionsFrame.copyLabel:SetPoint("TOPLEFT", 270, -485)
     optionsFrame.copyLabel:SetText(L.COPY_FROM)
 
-    optionsFrame.copySourceDropdown = CreateFrame("Frame", "LDTCopyProfileDropdown", optionsFrame, "UIDropDownMenuTemplate")
-    optionsFrame.copySourceDropdown:SetPoint("TOPLEFT", optionsFrame.copyLabel, "BOTTOMLEFT", -16, -6)
-
-    UIDropDownMenu_SetWidth(optionsFrame.copySourceDropdown, 210)
-    UIDropDownMenu_Initialize(optionsFrame.copySourceDropdown, function(self, level)
-        local info = UIDropDownMenu_CreateInfo()
-
-        for _, characterKey in ipairs(GetAvailableCharacterKeys()) do
-            info.notCheckable = true
-            info.text = GetDropdownItemText(characterKey, optionsFrame.selectedCopyCharacterKey == characterKey)
-            info.func = function()
-                optionsFrame.selectedCopyCharacterKey = characterKey
-                UIDropDownMenu_SetText(optionsFrame.copySourceDropdown, characterKey)
+    optionsFrame.copySourceDropdown = CreateScrollableDropdown(optionsFrame, "LDTCopyProfileDropdown", 300, 300,
+        function()
+            local entries = {}
+            for _, characterKey in ipairs(GetAvailableCharacterKeys()) do
+                entries[#entries + 1] = { name = characterKey, label = characterKey }
             end
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+            return entries
+        end, function(characterKey)
+            optionsFrame.selectedCopyCharacterKey = characterKey
+            optionsFrame.copySourceDropdown:SetText(characterKey)
+        end, function() return optionsFrame.selectedCopyCharacterKey end)
+    optionsFrame.copySourceDropdown:SetPoint("TOPLEFT", optionsFrame.copyLabel, "BOTTOMLEFT", 0, -6)
 
     optionsFrame.copyButton = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
     optionsFrame.copyButton:SetSize(110, 22)
-    optionsFrame.copyButton:SetPoint("TOPLEFT", optionsFrame.copySourceDropdown, "BOTTOMLEFT", 20, -8)
+    optionsFrame.copyButton:SetPoint("TOPLEFT", optionsFrame.copySourceDropdown, "BOTTOMLEFT", 0, -10)
     optionsFrame.copyButton:SetText(L.COPY)
     optionsFrame.copyButton:SetScript("OnClick", function()
         local sourceKey = optionsFrame.selectedCopyCharacterKey
@@ -921,7 +1228,7 @@ local function CreateOptionsFrame()
         rootDB.characters[currentCharacterKey] = DeepCopy(sourceProfile)
         RefreshActiveProfile()
         ResetDamageTotals()
-        ReapplyPowerBarAnchor()
+        ReapplyAnchor()
         UpdateMinimapButtonPosition()
         if minimapButton then
             minimapButton:SetShown(not db.minimap.hide)
@@ -930,21 +1237,50 @@ local function CreateOptionsFrame()
         print("|cff00ff98" .. L.ADDON_TITLE .. "|r : " .. string.format(L.COPIED_FROM, sourceKey))
     end)
 
+    optionsFrame.resetButton = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
+    optionsFrame.resetButton:SetSize(180, 22)
+    optionsFrame.resetButton:SetPoint("TOPLEFT", 650, -510)
+    optionsFrame.resetButton:SetText(L.RESET_POSITION)
+    optionsFrame.resetButton:SetScript("OnClick", function()
+        db.point, db.relativePoint = DEFAULTS.point, DEFAULTS.relativePoint
+        db.x, db.y = DEFAULTS.x, DEFAULTS.y
+        RefreshLayout()
+        UpdateOptionsControls()
+    end)
+
+    optionsFrame.clearButton = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
+    optionsFrame.clearButton:SetSize(180, 22)
+    optionsFrame.clearButton:SetPoint("TOP", optionsFrame.resetButton, "BOTTOM", 0, -10)
+    optionsFrame.clearButton:SetText(L.CLEAR_DAMAGE)
+    optionsFrame.clearButton:SetScript("OnClick", function()
+        ResetDamageTotals()
+        UpdateDisplay()
+    end)
+
     optionsFrame.sliders = {
-        optionsFrame.anchorSpacingSlider,
+        optionsFrame.leftOffsetSlider,
+        optionsFrame.rightOffsetSlider,
         optionsFrame.widthSlider,
         optionsFrame.heightSlider,
         optionsFrame.offsetXSlider,
         optionsFrame.offsetYSlider,
         optionsFrame.windowSlider,
+        optionsFrame.minimapAngleSlider,
     }
 
-    optionsFrame.closeButton = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
-    optionsFrame.closeButton:SetSize(80, 22)
-    optionsFrame.closeButton:SetPoint("BOTTOM", 0, 18)
-    optionsFrame.closeButton:SetFrameStrata("DIALOG")
-    optionsFrame.closeButton:SetFrameLevel(optionsFrame:GetFrameLevel() + 10)
-    optionsFrame.closeButton:SetText(L.CLOSE)
+    optionsFrame.footer = CreateFrame("Frame", nil, optionsFrame, "BackdropTemplate")
+    optionsFrame.footer:SetPoint("BOTTOMLEFT", 1, 1)
+    optionsFrame.footer:SetPoint("BOTTOMRIGHT", -1, 1)
+    optionsFrame.footer:SetHeight(34)
+    optionsFrame.footer:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+    optionsFrame.footer:SetBackdropColor(0.01, 0.01, 0.01, 0.92)
+    optionsFrame.footer.text = optionsFrame.footer:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    optionsFrame.footer.text:SetPoint("LEFT", 14, 0)
+    optionsFrame.footer.text:SetText("Lafee Damage Tracker API v1  •  /ldt config")
+    optionsFrame.footer.text:SetTextColor(0.62, 0.64, 0.7)
+
+    optionsFrame.closeButton = CreateFrame("Button", nil, optionsFrame.titleBar, "UIPanelCloseButton")
+    optionsFrame.closeButton:SetPoint("RIGHT", -6, 0)
     optionsFrame.closeButton:SetScript("OnClick", function()
         if GetCurrentKeyBoardFocus() then
             GetCurrentKeyBoardFocus():ClearFocus()
@@ -952,7 +1288,38 @@ local function CreateOptionsFrame()
         optionsFrame:Hide()
     end)
 
-    SkinOptionsFrame()
+    local function AddPageControls(pageName, ...)
+        local controls = optionsFrame.pageControls[pageName]
+        for index = 1, select("#", ...) do controls[#controls + 1] = select(index, ...) end
+    end
+    AddPageControls("GENERAL",
+        optionsFrame.generalSection, optionsFrame.profileSection,
+        optionsFrame.characterLabel, optionsFrame.characterValue, optionsFrame.showCheck,
+        optionsFrame.minimapCheck, optionsFrame.windowSlider, optionsFrame.windowSlider.input,
+        optionsFrame.minimapAngleSlider, optionsFrame.minimapAngleSlider.input,
+        optionsFrame.copyLabel, optionsFrame.copySourceDropdown, optionsFrame.copyButton,
+        optionsFrame.resetButton, optionsFrame.clearButton)
+    AddPageControls("APPEARANCE",
+        optionsFrame.appearanceSection,
+        optionsFrame.barStyleLabel, optionsFrame.barStyleDropdown,
+        optionsFrame.widthSlider, optionsFrame.widthSlider.input,
+        optionsFrame.heightSlider, optionsFrame.heightSlider.input)
+    AddPageControls("POSITIONING",
+        optionsFrame.anchorSection, optionsFrame.freePositionSection,
+        optionsFrame.anchorModeLabel, optionsFrame.anchorModeDropdown,
+        optionsFrame.anchorFrameLabel, optionsFrame.anchorFrameDropdown,
+        optionsFrame.manualAnchorLabel, optionsFrame.manualAnchorInput,
+        optionsFrame.anchorPointLabel, optionsFrame.anchorPointDropdown,
+        optionsFrame.relativePointLabel, optionsFrame.relativePointDropdown,
+        optionsFrame.anchorOffsetXInput.label, optionsFrame.anchorOffsetXInput,
+        optionsFrame.anchorOffsetYInput.label, optionsFrame.anchorOffsetYInput,
+        optionsFrame.inheritWidthCheck,
+        optionsFrame.leftOffsetSlider, optionsFrame.leftOffsetSlider.input,
+        optionsFrame.rightOffsetSlider, optionsFrame.rightOffsetSlider.input,
+        optionsFrame.offsetXSlider, optionsFrame.offsetXSlider.input,
+        optionsFrame.offsetYSlider, optionsFrame.offsetYSlider.input)
+
+    SelectOptionsPage("GENERAL")
 end
 
 local function ToggleOptionsFrame()
@@ -969,29 +1336,20 @@ local function ToggleOptionsFrame()
 end
 
 local function CreateMinimapButton()
+    if minimapButton then return end
+
     minimapButton = CreateFrame("Button", "LafeeDamageTrackerMinimapButton", Minimap)
     minimapButton:SetSize(32, 32)
     minimapButton:SetFrameStrata("MEDIUM")
-    minimapButton:SetFrameLevel(Minimap:GetFrameLevel() + 8)
     minimapButton:SetMovable(true)
     minimapButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     minimapButton:RegisterForDrag("LeftButton")
-
-    minimapButton.background = minimapButton:CreateTexture(nil, "BACKGROUND")
-    minimapButton.background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-    minimapButton.background:SetSize(24, 24)
-    minimapButton.background:SetPoint("CENTER")
 
     minimapButton.icon = minimapButton:CreateTexture(nil, "ARTWORK", nil, 1)
     minimapButton.icon:SetTexture("Interface\\Icons\\INV_Shield_06")
     minimapButton.icon:SetSize(22, 22)
     minimapButton.icon:SetPoint("CENTER")
     minimapButton.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-
-    minimapButton.border = minimapButton:CreateTexture(nil, "OVERLAY")
-    minimapButton.border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-    minimapButton.border:SetSize(54, 54)
-    minimapButton.border:SetPoint("TOPLEFT", -11, 11)
 
     minimapButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
@@ -1039,24 +1397,24 @@ local function CreateMinimapButton()
 end
 
 local function CreateUI()
-    frame:SetClampedToScreen(true)
-    frame:SetMovable(true)
-    frame:EnableMouse(true)
-    frame:RegisterForDrag("LeftButton")
+    anchorFrame:SetClampedToScreen(true)
+    anchorFrame:SetMovable(true)
+    anchorFrame:EnableMouse(true)
+    anchorFrame:RegisterForDrag("LeftButton")
 
-    frame:SetBackdrop({
+    anchorFrame:SetBackdrop({
         bgFile = "Interface\\Buttons\\WHITE8X8",
     })
-    frame:SetBackdropColor(0, 0, 0, 0)
+    anchorFrame:SetBackdropColor(0, 0, 0, 0)
 
-    frame:SetScript("OnDragStart", function(self)
-        if db.anchorMode == "FREE" then
+    anchorFrame:SetScript("OnDragStart", function(self)
+        if db.anchorMode == "FREE" and not externalAnchors.Main then
             self:StartMoving()
         end
     end)
 
-    frame:SetScript("OnDragStop", function(self)
-        if db.anchorMode ~= "FREE" then return end
+    anchorFrame:SetScript("OnDragStop", function(self)
+        if db.anchorMode ~= "FREE" or externalAnchors.Main then return end
         self:StopMovingOrSizing()
         local point, _, relativePoint, xOfs, yOfs = self:GetPoint()
         db.point = point
@@ -1068,33 +1426,32 @@ local function CreateUI()
         end
     end)
 
-    frame.bar = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-    frame.bar:SetPoint("TOP", 0, -4)
+    barFrame = CreateFrame("Frame", "LafeeDamageTrackerBarFrame", anchorFrame, "BackdropTemplate")
+    barFrame:SetAllPoints(anchorFrame)
 
-    frame.bar:SetBackdrop({
+    barFrame:SetBackdrop({
         bgFile = "Interface\\Buttons\\WHITE8X8",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
         edgeSize = 12,
         insets = { left = 3, right = 3, top = 3, bottom = 3 },
     })
-    frame.bar:SetBackdropColor(0.08, 0.08, 0.08, 0.35)
-    frame.bar:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.9)
+    barFrame:SetBackdropColor(0.08, 0.08, 0.08, 0.35)
+    barFrame:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.9)
 
-    frame.bar.phys = frame.bar:CreateTexture(nil, "ARTWORK")
-    frame.bar.phys:SetPoint("LEFT", BAR_INSET, 0)
-    frame.bar.phys:SetTexture("Interface\\Buttons\\WHITE8X8")
-    frame.bar.phys:SetColorTexture(0.82, 0.82, 0.82, 0.95)
+    barFrame.phys = barFrame:CreateTexture(nil, "ARTWORK")
+    barFrame.phys:SetPoint("LEFT", BAR_INSET, 0)
+    barFrame.phys:SetTexture("Interface\\Buttons\\WHITE8X8")
+    barFrame.phys:SetColorTexture(0.82, 0.82, 0.82, 0.95)
 
-    frame.bar.magic = frame.bar:CreateTexture(nil, "ARTWORK")
-    frame.bar.magic:SetTexture("Interface\\Buttons\\WHITE8X8")
-    frame.bar.magic:SetColorTexture(0.55, 0.20, 0.85, 0.95)
+    barFrame.magic = barFrame:CreateTexture(nil, "ARTWORK")
+    barFrame.magic:SetTexture("Interface\\Buttons\\WHITE8X8")
+    barFrame.magic:SetColorTexture(0.55, 0.20, 0.85, 0.95)
 
-    frame.bar.separator = frame.bar:CreateTexture(nil, "OVERLAY")
-    frame.bar.separator:SetWidth(1)
-    frame.bar.separator:SetColorTexture(1, 1, 1, 0.9)
+    barFrame.separator = barFrame:CreateTexture(nil, "OVERLAY")
+    barFrame.separator:SetWidth(1)
+    barFrame.separator:SetColorTexture(1, 1, 1, 0.9)
 
     RefreshLayout()
-    CreateMinimapButton()
 end
 
 local function OnUnitCombat(unitTarget, action, _, amount, schoolMask)
@@ -1105,13 +1462,11 @@ local function OnUnitCombat(unitTarget, action, _, amount, schoolMask)
     UpdateDisplay()
 end
 
-frame:SetScript("OnEvent", function(_, event, ...)
+eventFrame:SetScript("OnEvent", function(_, event, ...)
     if event == "ADDON_LOADED" then
         local loadedAddon = ...
         if loadedAddon ~= addonName then
-            if db and (loadedAddon == "BetterCooldownManager" or loadedAddon == "ElvUI") then
-                ReapplyPowerBarAnchor()
-            end
+            if db and (db.anchorMode ~= "FREE" or externalAnchors.Main) then ReapplyAnchor() end
             return
         end
 
@@ -1146,21 +1501,23 @@ frame:SetScript("OnEvent", function(_, event, ...)
         RefreshActiveProfile()
 
         CreateUI()
+    elseif event == "PLAYER_LOGIN" then
+        CreateMinimapButton()
     elseif event == "PLAYER_ENTERING_WORLD" then
         ResetDamageTotals()
-        ReapplyPowerBarAnchor()
+        ReapplyAnchor()
         UpdateDisplay()
     elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
         local unit = ...
         if unit == "player" then
-            ReapplyPowerBarAnchor()
+            ReapplyAnchor()
         end
     elseif event == "PLAYER_REGEN_DISABLED" then
         UpdateDisplay()
     elseif event == "PLAYER_REGEN_ENABLED" then
         ResetDamageTotals()
         if pendingAnchorUpdate then
-            ReapplyPowerBarAnchor()
+            ReapplyAnchor()
         end
         UpdateDisplay()
     elseif event == "UNIT_COMBAT" then
@@ -1168,7 +1525,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
 end)
 
-frame:SetScript("OnUpdate", function(_, elapsed)
+eventFrame:SetScript("OnUpdate", function(_, elapsed)
     elapsedSinceUpdate = elapsedSinceUpdate + elapsed
     if elapsedSinceUpdate >= 0.1 then
         elapsedSinceUpdate = 0
@@ -1178,27 +1535,28 @@ frame:SetScript("OnUpdate", function(_, elapsed)
     end
 end)
 
-frame:RegisterEvent("ADDON_LOADED")
-frame:RegisterEvent("PLAYER_ENTERING_WORLD")
-frame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-frame:RegisterEvent("PLAYER_REGEN_DISABLED")
-frame:RegisterEvent("PLAYER_REGEN_ENABLED")
-frame:RegisterEvent("UNIT_COMBAT")
+eventFrame:RegisterEvent("ADDON_LOADED")
+eventFrame:RegisterEvent("PLAYER_LOGIN")
+eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+eventFrame:RegisterEvent("UNIT_COMBAT")
 
--- Public integration API. Consumers such as BetterCooldownManager should use
--- this table instead of reading LafeeDamageTrackerDB or calling local UI
--- helpers directly. API methods intentionally validate through the same
--- profile normalization path as the native LDT options window.
+-- Public integration API. See docs/API.md for the supported contract.
 local API = _G.LafeeDamageTrackerAPI or {}
 _G.LafeeDamageTrackerAPI = API
-API.version = 1
+API.VERSION = 1
+API.version = API.VERSION
 
 local PUBLIC_OPTIONS = {
     point = true, relativePoint = true, x = true, y = true,
     width = true, height = true, shown = true, window = true,
     anchorMode = true, anchorPosition = true, anchorSpacing = true,
     anchorFrom = true, anchorParent = true, anchorTo = true,
-    matchPowerBarWidth = true, bcdmAnchor = true,
+    inheritWidth = true, leftOffset = true, rightOffset = true,
+    anchorOffsetX = true, anchorOffsetY = true,
+    matchPowerBarWidth = true,
     bcdmOffsetX = true, bcdmOffsetY = true, barStyle = true,
 }
 
@@ -1209,7 +1567,7 @@ local function RefreshAfterPublicOptionChange(option)
     elseif option == "minimap.angle" then
         UpdateMinimapButtonPosition()
     else
-        ReapplyPowerBarAnchor()
+        ReapplyAnchor()
         UpdateDisplay()
     end
     if optionsFrame and optionsFrame:IsShown() then UpdateOptionsControls() end
@@ -1219,10 +1577,65 @@ function API:IsReady()
     return db ~= nil and rootDB ~= nil
 end
 
+function API:GetVersion()
+    return self.VERSION
+end
+
+function API:GetAnchor(anchorName)
+    if anchorName == "Main" then return anchorFrame end
+    return nil
+end
+
+local function NormalizeExternalAnchorOptions(options)
+    options = type(options) == "table" and options or {}
+    local point = options.point or "TOP"
+    local relativePoint = options.relativePoint or "BOTTOM"
+    if not VALID_ANCHOR_POINTS[point] or not VALID_ANCHOR_POINTS[relativePoint] then
+        return nil, "invalid-point"
+    end
+
+    local x = tonumber(options.x) or 0
+    local y = tonumber(options.y) or 0
+    local leftOffset = tonumber(options.leftOffset) or 0
+    local rightOffset = tonumber(options.rightOffset) or 0
+    if leftOffset < 0 or rightOffset < 0 then return nil, "invalid-offset" end
+
+    return {
+        point = point,
+        relativePoint = relativePoint,
+        x = x,
+        y = y,
+        inheritWidth = options.inheritWidth == true,
+        leftOffset = leftOffset,
+        rightOffset = rightOffset,
+    }
+end
+
+function API:SetExternalAnchor(anchorName, externalFrame, options)
+    if anchorName ~= "Main" then return false, "unknown-anchor" end
+    if externalFrame == anchorFrame or not IsFrameObject(externalFrame) then return false, "invalid-frame" end
+    local normalizedOptions, errorCode = NormalizeExternalAnchorOptions(options)
+    if not normalizedOptions then return false, errorCode end
+
+    externalAnchors.Main = { frame = externalFrame, options = normalizedOptions }
+    if db then ReapplyAnchor() end
+    return true
+end
+
+function API:ClearExternalAnchor(anchorName)
+    if anchorName ~= "Main" then return false, "unknown-anchor" end
+    externalAnchors.Main = nil
+    if db then ReapplyAnchor() end
+    return true
+end
+
 function API:GetOption(option)
     if not db then return nil end
     if option == "minimap.hide" then return db.minimap.hide end
     if option == "minimap.angle" then return db.minimap.angle end
+    if option == "matchPowerBarWidth" then return db.inheritWidth end
+    if option == "bcdmOffsetX" then return db.anchorOffsetX end
+    if option == "bcdmOffsetY" then return db.anchorOffsetY end
     if not PUBLIC_OPTIONS[option] then return nil end
     return db[option]
 end
@@ -1241,13 +1654,19 @@ function API:SetOption(option, value)
     elseif option == "anchorParent" then
         if type(value) ~= "string" or value == "" then return false, "invalid-value" end
         db.anchorParent = value
-        db.bcdmAnchor = value
     elseif option == "anchorMode" then
-        if value ~= "FREE" and value ~= "ANCHORED"
-            and value ~= "BETTER_COOLDOWN_MANAGER" and value ~= "ELVUI" then
-            return false, "invalid-value"
-        end
+        if value == "BETTER_COOLDOWN_MANAGER" or value == "ELVUI" then value = "ANCHORED" end
+        if value ~= "FREE" and value ~= "ANCHORED" then return false, "invalid-value" end
         db.anchorMode = value
+    elseif option == "matchPowerBarWidth" or option == "inheritWidth" then
+        db.inheritWidth = value == true
+        db.matchPowerBarWidth = db.inheritWidth
+    elseif option == "bcdmOffsetX" or option == "anchorOffsetX" then
+        db.anchorOffsetX = value
+        db.bcdmOffsetX = value
+    elseif option == "bcdmOffsetY" or option == "anchorOffsetY" then
+        db.anchorOffsetY = value
+        db.bcdmOffsetY = value
     elseif PUBLIC_OPTIONS[option] then
         db[option] = value
     else
@@ -1275,19 +1694,11 @@ function API:CopyProfile(sourceKey)
     rootDB.characters[currentCharacterKey] = DeepCopy(sourceProfile)
     RefreshActiveProfile()
     ResetDamageTotals()
-    ReapplyPowerBarAnchor()
+    ReapplyAnchor()
     UpdateMinimapButtonPosition()
     if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
     if optionsFrame and optionsFrame:IsShown() then UpdateOptionsControls() end
     return true
-end
-
-function API:GetBCDMAnchors()
-    local anchors = {}
-    for _, anchor in ipairs(BCDM_ANCHORS) do
-        anchors[#anchors + 1] = { name = anchor.name, label = anchor.label }
-    end
-    return anchors
 end
 
 function API:GetAnchorPoints()
@@ -1299,13 +1710,7 @@ function API:GetAnchorPoints()
 end
 
 function API:GetAnchorParents()
-    local parents = {}
-    for _, anchor in ipairs(ANCHOR_PARENTS) do
-        if anchor.name ~= "ElvUF_Player" and anchor.name ~= "ElvUF_Target"
-            or C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("ElvUI") then
-            parents[#parents + 1] = { name = anchor.name, label = anchor.label }
-        end
-    end
+    local parents = GetAvailableAnchorParents()
     local current = db and db.anchorParent
     if type(current) == "string" and current ~= "" then
         local found = false
@@ -1343,7 +1748,7 @@ function API:Refresh()
 end
 
 function API:GetTrackerFrame()
-    return frame
+    return anchorFrame
 end
 
 function API:OpenOptions()
