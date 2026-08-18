@@ -5,6 +5,10 @@
 ## Title-esES: Rastreador de tipos de daño de Lafee
 ## Title-esMX: Rastreador de tipos de daño de Lafee
 ## Title-frFR: Lafee Damage Type Tracker
+## Title-itIT: Lafee Damage Type Tracker
+## Title-ptBR: Lafee Damage Type Tracker
+## Title-ruRU: Lafee — типы урона
+## Title-koKR: Lafee 피해 유형 추적기
 ## Title-zhCN: Lafee 伤害类型追踪器
 ## Title-zhTW: Lafee 傷害類型追蹤器
 ## Notes: Tracks physical vs magical damage taken with a configurable minimap button and sliding time window.
@@ -12,6 +16,10 @@
 ## Notes-esES: Registra el daño físico y mágico recibido con un botón de minimapa configurable y una ventana de tiempo deslizante.
 ## Notes-esMX: Registra el daño físico y mágico recibido con un botón de minimapa configurable y una ventana de tiempo deslizante.
 ## Notes-frFR: Suit les dégâts physiques et magiques subis avec un bouton de minicarte configurable et une fenêtre de temps glissante.
+## Notes-itIT: Tiene traccia dei danni fisici e magici subiti con un pulsante minimappa configurabile e una finestra temporale mobile.
+## Notes-ptBR: Acompanha o dano físico e mágico recebido com um botão de minimapa configurável e uma janela de tempo deslizante.
+## Notes-ruRU: Отслеживает полученный физический и магический урон с настраиваемой кнопкой у миникарты и скользящим временным окном.
+## Notes-koKR: 설정 가능한 미니맵 버튼과 이동 시간 창으로 받은 물리 및 마법 피해를 추적합니다.
 ## Notes-zhCN: 使用可配置的小地图按钮和滑动时间窗口追踪受到的物理与魔法伤害。
 ## Notes-zhTW: 使用可設定的小地圖按鈕和滑動時間視窗追蹤受到的物理與魔法傷害。
 ## Author: Lafee
@@ -19,4 +27,5 @@
 ## SavedVariables: LafeeDamageTrackerDB
 
 Localization.lua
+LocalizationOverrides.lua
 lafee_damage_tracker.lua
