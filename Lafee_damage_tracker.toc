@@ -26,6 +26,7 @@
 ## Version: 1.2.0
 ## SavedVariables: LafeeDamageTrackerDB
 
+Libraries/Init.xml
 Localization.lua
 LocalizationOverrides.lua
 EscapeClose.lua

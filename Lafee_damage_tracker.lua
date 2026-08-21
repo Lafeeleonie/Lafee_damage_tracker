@@ -30,9 +30,15 @@ local DEFAULTS = {
     barStyle = "SQUARE",
     minimap = {
         angle = 225,
+        minimapPos = 225,
         hide = false,
     },
 }
+
+local MINIMAP_BROKER_NAME = "Lafee Damage Tracker"
+local MINIMAP_ICON = "Interface\\Icons\\INV_Shield_06"
+local LDB = LibStub("LibDataBroker-1.1")
+local DBIcon = LibStub("LibDBIcon-1.0")
 
 local OUT_OF_COMBAT_ALPHA = 0.5
 local IN_COMBAT_ALPHA = 1
@@ -77,7 +83,7 @@ local anchorFrame = CreateFrame("Frame", "LafeeDamageTrackerAnchorFrame", UIPare
 -- Deprecated global retained for addons that referenced the pre-1.2 root frame.
 _G.LafeeDamageTrackerFrame = anchorFrame
 local barFrame
-local minimapButton
+local minimapDataObject
 local optionsFrame
 local elapsedSinceUpdate = 0
 local externalAnchors = {}
@@ -116,23 +122,6 @@ local function Clamp(value, minValue, maxValue)
     return value
 end
 
-local function GetAngleDegrees(x, y)
-    if x == 0 then
-        if y >= 0 then
-            return 90
-        end
-        return 270
-    end
-
-    local angle = math.deg(math.atan(y / x))
-    if x < 0 then
-        angle = angle + 180
-    elseif y < 0 then
-        angle = angle + 360
-    end
-    return angle
-end
-
 local function GetCharacterKey()
     local name = UnitName("player") or UNKNOWNOBJECT
     local realm = GetRealmName() or UNKNOWNOBJECT
@@ -158,6 +147,8 @@ end
 
 local function RefreshActiveProfile()
     db = GetCharacterProfiles()[currentCharacterKey]
+    local legacyMinimapPos = type(db.minimap) == "table" and tonumber(db.minimap.minimapPos) or nil
+    local legacyMinimapAngle = type(db.minimap) == "table" and tonumber(db.minimap.angle) or nil
     local legacyAnchor = db.anchorFrom == nil or db.anchorParent == nil or db.anchorTo == nil
     local legacyOffsetY = db.bcdmOffsetY
     local legacyInheritWidth = db.inheritWidth == nil
@@ -204,7 +195,8 @@ local function RefreshActiveProfile()
     db.anchorOffsetY = Clamp(tonumber(db.anchorOffsetY) or DEFAULTS.anchorOffsetY, MIN_ANCHOR_OFFSET, MAX_ANCHOR_OFFSET)
     db.bcdmOffsetX = db.anchorOffsetX
     db.bcdmOffsetY = db.anchorOffsetY
-    db.minimap.angle = (tonumber(db.minimap.angle) or DEFAULTS.minimap.angle) % 360
+    db.minimap.minimapPos = (legacyMinimapPos or legacyMinimapAngle or DEFAULTS.minimap.minimapPos) % 360
+    db.minimap.angle = db.minimap.minimapPos
     db.minimap.hide = db.minimap.hide == true
     if db.barStyle ~= "CLASSIC" and db.barStyle ~= "SQUARE" then
         db.barStyle = DEFAULTS.barStyle
@@ -431,12 +423,18 @@ local function ApplyFrameSize()
 end
 
 local function UpdateMinimapButtonPosition()
-    if not minimapButton then return end
+    if not DBIcon:IsRegistered(MINIMAP_BROKER_NAME) then return end
+    db.minimap.angle = tonumber(db.minimap.minimapPos) or db.minimap.angle
+    DBIcon:Refresh(MINIMAP_BROKER_NAME, db.minimap)
+end
 
-    local angle = math.rad(db.minimap.angle or DEFAULTS.minimap.angle)
-    local radius = (Minimap:GetWidth() * 0.5) + 5
-    minimapButton:ClearAllPoints()
-    minimapButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * radius, math.sin(angle) * radius)
+local function UpdateMinimapButtonVisibility()
+    if not DBIcon:IsRegistered(MINIMAP_BROKER_NAME) then return end
+    if db.minimap.hide then
+        DBIcon:Hide(MINIMAP_BROKER_NAME)
+    else
+        DBIcon:Show(MINIMAP_BROKER_NAME)
+    end
 end
 
 local function UpdateDisplay()
@@ -703,6 +701,7 @@ end
 local function UpdateOptionsControls()
     if not optionsFrame then return end
 
+    db.minimap.angle = tonumber(db.minimap.minimapPos) or db.minimap.angle
     optionsFrame.characterValue:SetText(currentCharacterKey or "-")
     optionsFrame.showCheck:SetChecked(db.shown)
     optionsFrame.minimapCheck:SetChecked(not db.minimap.hide)
@@ -936,7 +935,7 @@ local function CreateOptionsFrame()
     optionsFrame.minimapCheck.text:SetText(L.SHOW_MINIMAP_BUTTON)
     optionsFrame.minimapCheck:SetScript("OnClick", function(self)
         db.minimap.hide = not self:GetChecked()
-        if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
+        UpdateMinimapButtonVisibility()
     end)
 
     optionsFrame.anchorModeLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -1192,6 +1191,7 @@ local function CreateOptionsFrame()
     optionsFrame.minimapAngleSlider:SetScript("OnValueChanged", function(self, value)
         if self._internalUpdate then return end
         db.minimap.angle = math.floor(value + 0.5) % 360
+        db.minimap.minimapPos = db.minimap.angle
         UpdateMinimapButtonPosition()
         self.input:SetText(tostring(db.minimap.angle))
     end)
@@ -1230,9 +1230,7 @@ local function CreateOptionsFrame()
         ResetDamageTotals()
         ReapplyAnchor()
         UpdateMinimapButtonPosition()
-        if minimapButton then
-            minimapButton:SetShown(not db.minimap.hide)
-        end
+        UpdateMinimapButtonVisibility()
         UpdateOptionsControls()
         print("|cff00ff98" .. L.ADDON_TITLE .. "|r : " .. string.format(L.COPIED_FROM, sourceKey))
     end)
@@ -1336,64 +1334,34 @@ local function ToggleOptionsFrame()
 end
 
 local function CreateMinimapButton()
-    if minimapButton then return end
-
-    minimapButton = CreateFrame("Button", "LafeeDamageTrackerMinimapButton", Minimap)
-    minimapButton:SetSize(32, 32)
-    minimapButton:SetFrameStrata("MEDIUM")
-    minimapButton:SetMovable(true)
-    minimapButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    minimapButton:RegisterForDrag("LeftButton")
-
-    minimapButton.icon = minimapButton:CreateTexture(nil, "ARTWORK", nil, 1)
-    minimapButton.icon:SetTexture("Interface\\Icons\\INV_Shield_06")
-    minimapButton.icon:SetSize(22, 22)
-    minimapButton.icon:SetPoint("CENTER")
-    minimapButton.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-
-    minimapButton:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText(L.ADDON_TITLE)
-        GameTooltip:AddLine(L.TOOLTIP_LEFT_CLICK, 1, 1, 1)
-        GameTooltip:AddLine(L.TOOLTIP_RIGHT_CLICK, 1, 1, 1)
-        GameTooltip:AddLine(L.TOOLTIP_DRAG, 1, 1, 1)
-        GameTooltip:Show()
-    end)
-
-    minimapButton:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
-
-    minimapButton:SetScript("OnClick", function(_, button)
-        if button == "LeftButton" then
-            ToggleOptionsFrame()
-        else
-            db.shown = not db.shown
-            UpdateDisplay()
-            if optionsFrame and optionsFrame:IsShown() then
-                UpdateOptionsControls()
-            end
-        end
-    end)
-
-    minimapButton:SetScript("OnDragStart", function(self)
-        self:SetScript("OnUpdate", function()
-            local cursorX, cursorY = GetCursorPosition()
-            local scale = Minimap:GetEffectiveScale()
-            local centerX, centerY = Minimap:GetCenter()
-            local x = cursorX / scale - centerX
-            local y = cursorY / scale - centerY
-            db.minimap.angle = GetAngleDegrees(x, y)
-            UpdateMinimapButtonPosition()
-        end)
-    end)
-
-    minimapButton:SetScript("OnDragStop", function(self)
-        self:SetScript("OnUpdate", nil)
-    end)
-
-    minimapButton:SetShown(not db.minimap.hide)
-    UpdateMinimapButtonPosition()
+    if not minimapDataObject then
+        minimapDataObject = LDB:NewDataObject(MINIMAP_BROKER_NAME, {
+            type = "launcher",
+            text = L.ADDON_TITLE,
+            icon = MINIMAP_ICON,
+            OnClick = function(_, button)
+                if button == "LeftButton" then
+                    ToggleOptionsFrame()
+                elseif button == "RightButton" then
+                    db.shown = not db.shown
+                    UpdateDisplay()
+                    if optionsFrame and optionsFrame:IsShown() then
+                        UpdateOptionsControls()
+                    end
+                end
+            end,
+            OnTooltipShow = function(tooltip)
+                tooltip:AddLine(L.ADDON_TITLE)
+                tooltip:AddLine(L.TOOLTIP_LEFT_CLICK, 1, 1, 1)
+                tooltip:AddLine(L.TOOLTIP_RIGHT_CLICK, 1, 1, 1)
+                tooltip:AddLine(L.TOOLTIP_DRAG, 1, 1, 1)
+            end,
+        })
+    end
+    if not DBIcon:IsRegistered(MINIMAP_BROKER_NAME) then
+        DBIcon:Register(MINIMAP_BROKER_NAME, minimapDataObject, db.minimap)
+    end
+    UpdateMinimapButtonVisibility()
 end
 
 local function CreateUI()
@@ -1563,8 +1531,9 @@ local PUBLIC_OPTIONS = {
 local function RefreshAfterPublicOptionChange(option)
     RefreshActiveProfile()
     if option == "minimap.hide" then
-        if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
+        UpdateMinimapButtonVisibility()
     elseif option == "minimap.angle" then
+        db.minimap.minimapPos = db.minimap.angle
         UpdateMinimapButtonPosition()
     else
         ReapplyAnchor()
@@ -1632,7 +1601,7 @@ end
 function API:GetOption(option)
     if not db then return nil end
     if option == "minimap.hide" then return db.minimap.hide end
-    if option == "minimap.angle" then return db.minimap.angle end
+    if option == "minimap.angle" then return db.minimap.minimapPos end
     if option == "matchPowerBarWidth" then return db.inheritWidth end
     if option == "bcdmOffsetX" then return db.anchorOffsetX end
     if option == "bcdmOffsetY" then return db.anchorOffsetY end
@@ -1648,6 +1617,7 @@ function API:SetOption(option, value)
         local angle = tonumber(value)
         if not angle then return false, "invalid-value" end
         db.minimap.angle = angle % 360
+        db.minimap.minimapPos = db.minimap.angle
     elseif option == "anchorFrom" or option == "anchorTo" then
         if not VALID_ANCHOR_POINTS[value] then return false, "invalid-value" end
         db[option] = value
@@ -1696,7 +1666,7 @@ function API:CopyProfile(sourceKey)
     ResetDamageTotals()
     ReapplyAnchor()
     UpdateMinimapButtonPosition()
-    if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
+    UpdateMinimapButtonVisibility()
     if optionsFrame and optionsFrame:IsShown() then UpdateOptionsControls() end
     return true
 end
@@ -1742,7 +1712,7 @@ function API:Refresh()
     if not db then return false, "not-ready" end
     RefreshLayout()
     UpdateMinimapButtonPosition()
-    if minimapButton then minimapButton:SetShown(not db.minimap.hide) end
+    UpdateMinimapButtonVisibility()
     if optionsFrame and optionsFrame:IsShown() then UpdateOptionsControls() end
     return true
 end
